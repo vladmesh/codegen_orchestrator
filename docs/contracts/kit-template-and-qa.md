@@ -253,8 +253,45 @@ a source answer for a catalog target, or a catalog answer for a local one, refus
 `target.route`. All glue of a source answer stays outstanding (no closure is discounted) and
 never becomes a product glue repair. The answer cannot attest the commit, project or
 repository ownership, source existence, ancestry or physical containment, or the distribution
-and wheel; those remain the future local executor's and probe's. No route runs this check yet:
-local installs stay `local_install_unsupported`.
+and wheel; the fixed probe's source modes below attest the source and installed artifact, and
+project/repository ownership stays the API's. No route runs this check yet: local installs stay
+`local_install_unsupported`.
+
+The fixed probe reads a `LocalPackageInstall` in two source modes under the product's own
+`.venv/bin/python -I`, with no service import. `source-provenance` applies the catalog modes'
+interpreter and framework origin, Copier answers and modules, tooling requirement/lock/installed
+commit and core checks, then requires the checkout HEAD to be exactly the saved commit
+(`source_commit_mismatch`), the saved path a tree of that commit (`source_path_untracked`)
+holding only regular files (`source_entry_unsupported`), its tracked bytes unchanged
+(`source_changed`) and no untracked or ignored entry below it (`source_uncommitted`). It reads
+as data the kit's own product-source containment (nested product, escape), static
+`read_source_package` identity (name, canonical distribution, version:
+`package_identity_changed`) and `metadata_from_source` metadata (`package.yaml`, default binding
+inside its module), then `require_core` and the source's `requires-python` against the kit's
+target interpreter reading (`python_incompatible`). It builds, installs, fetches, imports and
+writes nothing. `source-readback`, after `kit add --package-source`, `kit bind --default` only
+for a package that declares a default binding, and regeneration, repeats those reads at the same
+HEAD and reads the wheel named by the backend requirement's `tool.uv.sources` path under
+`services/backend/packages/`: the kit's `verify_source_wheel`, a `metadata_from_wheel` digest
+equal to the source's (`wheel_metadata_mismatch`), its SHA256 equal to the single `uv.lock`
+wheel hash of that path and version (`lock_mismatch`), the backend distribution's version and
+`direct_url.json` file URL naming that wheel (`direct_url_mismatch`), every wheel member outside
+`.dist-info`/`.data` installed byte-identical (`installed_files_mismatch`), native activation and
+allowlist and, only where declared, the bound default resource bytes. Untracked or ignored
+entries below the source after the build are reported as `residue`, never as package input.
+
+`LocalInstallVerification` (`dto/local_install.py`) is that output validated by the scaffolder's
+`admitted_local_verification` together with the caller's own protected-file snapshot
+(`local_verification_malformed`, `local_verification_mismatch: <field>`). Its `target` repeats
+the saved target and claims no ownership. `local_verification_mismatch` compares, in order,
+every target field with the admitted `LocalPackageInstall`, `head` with its commit, the observed
+core and tooling, then a readback with its provenance: source tree and metadata, protected bytes,
+wheel metadata, lock hash, installed version and binding digest. It carries no catalog, tag,
+digest or component target and never validates as `InstallVerification`. A changed branch head
+requires replanning against an existing commit; the future executor enforces HEAD equal to the
+saved commit before mutation and before its install commit. Build tools and dependencies stay
+the kit's, so no build is claimed reproducible from the source tree. No route runs the source
+modes or stores the verification on an operation yet.
 
 The reader reads only the activated catalog snapshot (`shared/catalog_activation.yaml`):
 `packages/catalog.yaml` at its commit, verified against its raw SHA256 and the semantic
@@ -435,7 +472,13 @@ pre-push canary, and proves executor push/readback never invokes that canary. It
 reads component tag object/target/tree provenance, and runs the released fake-backend
 confirmation/preset/list/cancel corpus under the product bot interpreter. Its redacted
 `mechanical-install-result.json` identifies the candidate, executed stages, readback
-and exact non-force Git head. DB/Redis service tests prove actual persisted closure,
+and exact non-force Git head. On that published head the lane then commits a synthetic
+package source, runs the source provenance probe, its refusals (other commit, path, version or
+distribution, a changed tracked byte, an untracked file), the kit's source check-install,
+`kit add --package-source` and regeneration, and the readback with a changed installed file or
+source refused. Every probe runs `-I -B` and leaves source, lock, protected and environment trees
+byte-identical; the real consumer admits the readback only against its provenance, and the
+artifact's `local_source` retains raw outputs, tree, wheel, lock and refusals. DB/Redis service tests prove actual persisted closure,
 coverage, dispatch, zero engineering accounting and exclusive/recoverable ownership.
 The older `mega-noop` engineering runner directive remains historical evidence of a
 different route, retained by the ordinary engineering fixture and `mega-live`.

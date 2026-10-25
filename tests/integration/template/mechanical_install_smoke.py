@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from types import SimpleNamespace
 from urllib.request import urlopen
 
@@ -166,15 +167,9 @@ def tree_evidence(entries):
     }
 
 
-def prove_source_preflight(product, payload, answers):
-    """The pinned kit's `check-install --package-source` answer, admitted for a local target.
-
-    The source lives inside the product and imports a marker on any runtime import; the kit
-    must read it as data only, leaving product, lock and environment bytes as they were.
-    `answers` is filled per invocation, so a failed comparison keeps its evidence.
-    """
+def write_source(product):
+    """The synthetic notes-source package: data-only metadata and a marker on runtime import."""
     source = product / SOURCE_PATH
-    assert not (product / "packages").exists()
     module = source / "notes_source"
     module.mkdir(parents=True)
     (module / "package.yaml").write_text(
@@ -189,13 +184,26 @@ def prove_source_preflight(product, payload, answers):
     )
     (module / "__init__.py").write_text(
         "from pathlib import Path\n"
-        "Path(__file__).resolve().parents[3].joinpath('.git/notes-source-imported').touch()\n"
+        "marker = Path(__file__).resolve().parents[3] / '.git'\n"
+        "if marker.is_dir():\n"
+        "    marker.joinpath('notes-source-imported').touch()\n"
+        "package = None\n"
     )
     (source / "pyproject.toml").write_text(
         '[project]\nname = "codegen-kit-notes-source"\nversion = "1.0.0"\n'
+        'requires-python = ">=3.11"\n'
         '[project.entry-points."codegen_kit.packages"]\nnotes-source = "notes_source:package"\n'
+        '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n'
+        '[tool.hatch.build.targets.wheel]\npackages = ["notes_source"]\n'
+        "[tool.hatch.build.targets.wheel.force-include]\n"
+        '"notes_source/package.yaml" = "notes_source/package.yaml"\n'
     )
-    local = LocalPackageInstall.model_validate(
+    return source
+
+
+def local_target(product, payload, **changes):
+    """The `LocalPackageInstall` a planner would save for the notes-source package at HEAD."""
+    return LocalPackageInstall.model_validate(
         {
             "route": "package_source",
             "project_id": "00000000-0000-4000-8000-000000000001",
@@ -211,37 +219,84 @@ def prove_source_preflight(product, payload, answers):
             "python_version": payload["python_version"],
             "tooling_commit": payload["tooling_commit"],
         }
+        | changes
     )
-    tracked = run(["git", "ls-files"], product).splitlines()
 
-    owned = {
-        "source": source,
+
+def owned_environments(product):
+    return {
+        "source": product / SOURCE_PATH,
         "root": product / ".venv",
         "backend": product / "services/backend/.venv",
         "tg_bot": product / "services/tg_bot/.venv",
     }
 
-    def state():
-        return {
-            "git_status": run(["git", "status", "--porcelain", "--untracked-files=all"], product),
-            "ignored": run(["git", "status", "--porcelain", "--ignored"], product),
-            "locks": {
-                name: hashlib.sha256((product / name).read_bytes()).hexdigest()
-                for name in tracked
-                if Path(name).name == "uv.lock"
-            },
-            "protected": install.protected_files(product, tracked),
-            "trees": {name: owned_tree(path) for name, path in owned.items()},
-        }
+
+def product_state(product, tracked):
+    """Git status, locks, protected bytes and every owned source/environment tree."""
+    return {
+        "git_status": run(["git", "status", "--porcelain", "--untracked-files=all"], product),
+        "ignored": run(["git", "status", "--porcelain", "--ignored"], product),
+        "locks": {
+            name: hashlib.sha256((product / name).read_bytes()).hexdigest()
+            for name in tracked
+            if Path(name).name == "uv.lock"
+        },
+        "protected": install.protected_files(product, tracked),
+        "trees": {name: owned_tree(path) for name, path in owned_environments(product).items()},
+    }
+
+
+def state_changes(before, after):
+    changed = sorted(key for key in before if key != "trees" and before[key] != after[key])
+    changed += sorted(
+        f"{name}:{entry}"
+        for name, tree in before["trees"].items()
+        for entry in set(tree) | set(after["trees"][name])
+        if tree.get(entry) != after["trees"][name].get(entry)
+    )
+    return changed
+
+
+def byte_evidence(before, after, changed):
+    return {
+        "before": {k: tree_evidence(v) for k, v in before["trees"].items()},
+        "after": {k: tree_evidence(v) for k, v in after["trees"].items()},
+        "locks": after["locks"],
+        "protected_sha256": hashlib.sha256(
+            json.dumps(after["protected"], sort_keys=True).encode()
+        ).hexdigest(),
+        "changed": changed[:50],
+        "unchanged": not changed,
+    }
+
+
+def prove_source_preflight(product, payload, answers):
+    """The pinned kit's `check-install --package-source` answer, admitted for a local target.
+
+    The source lives inside the product and imports a marker on any runtime import; the kit
+    must read it as data only, leaving product, lock and environment bytes as they were.
+    `answers` is filled per invocation, so a failed comparison keeps its evidence.
+    """
+    assert not (product / "packages").exists()
+    write_source(product)
+    local = local_target(product, payload)
+    tracked = run(["git", "ls-files"], product).splitlines()
 
     kit_env = install.product_environment(product) | {
         "PYTHONDONTWRITEBYTECODE": SOURCE_PREFLIGHT_CACHE_POLICY["PYTHONDONTWRITEBYTECODE"]
     }
     answers["cache_policy"] = SOURCE_PREFLIGHT_CACHE_POLICY
-    answers["compared"] = ["git_status", "ignored", "locks", "protected", *owned]
+    answers["compared"] = [
+        "git_status",
+        "ignored",
+        "locks",
+        "protected",
+        *owned_environments(product),
+    ]
     try:
         for label, version in (("admitted", "1.0.0"), ("version_mismatch", "1.0.1")):
-            before = state()
+            before = product_state(product, tracked)
             # The fixed argv a local executor would run from its owned checkout.
             argv = [str(product / ".venv/bin/kit"), "check-install", "notes-source", "--json"]
             argv += ["--package-source", SOURCE_PATH, "--version", version]
@@ -254,28 +309,13 @@ def prove_source_preflight(product, payload, answers):
                 text=True,
                 timeout=120,
             )
-            after = state()
-            changed = sorted(key for key in before if key != "trees" and before[key] != after[key])
-            changed += sorted(
-                f"{name}:{entry}"
-                for name, tree in before["trees"].items()
-                for entry in set(tree) | set(after["trees"][name])
-                if tree.get(entry) != after["trees"][name].get(entry)
-            )
+            after = product_state(product, tracked)
+            changed = state_changes(before, after)
             answers[label] = {
                 "argv": argv[1:],
                 "returncode": answer.returncode,
                 "native": json.loads(answer.stdout),
-                "bytes": {
-                    "before": {k: tree_evidence(v) for k, v in before["trees"].items()},
-                    "after": {k: tree_evidence(v) for k, v in after["trees"].items()},
-                    "locks": after["locks"],
-                    "protected_sha256": hashlib.sha256(
-                        json.dumps(after["protected"], sort_keys=True).encode()
-                    ).hexdigest(),
-                    "changed": changed[:50],
-                    "unchanged": not changed,
-                },
+                "bytes": byte_evidence(before, after, changed),
             }
             assert not changed, f"check-install {label} changed {changed[:20]}"
             assert not (product / ".git/notes-source-imported").exists()
@@ -301,6 +341,217 @@ def prove_source_preflight(product, payload, answers):
     finally:
         shutil.rmtree(product / "packages")
     answers["package_runtime_imported"] = False
+
+
+PROBE = ROOT / "services/scaffolder/src/install_probe.py"
+#: `-B` keeps the probe's interpreter from writing bytecode; existing cache files are compared.
+SOURCE_PROBE_CACHE_POLICY = {"interpreter_flags": ["-I", "-B"], "cache_files_compared": True}
+
+
+def prove_local_source(product, payload, answers):  # noqa: PLR0915  # one evidence sequence
+    """The fixed source probe over a package committed at HEAD, kit add, generate, readback.
+
+    Every probe run is read-only over the owned trees and a refusal names its boundary; the
+    readback is admitted only against its provenance through the real canonical consumer.
+    """
+    write_source(product)
+    run(["git", "add", "--", SOURCE_PATH], product)
+    run(
+        [
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "user.name=CI",
+            "-c",
+            "user.email=ci@example.com",
+            "commit",
+            "-qm",
+            "Owned notes-source package",
+        ],
+        product,
+    )
+    local = local_target(product, payload)
+    parent = run(["git", "rev-parse", "HEAD~1"], product)
+    tracked = run(["git", "ls-files"], product).splitlines()
+    env = install.product_environment(product)
+    marker = product / ".git/notes-source-imported"
+    answers["cache_policy"] = SOURCE_PROBE_CACHE_POLICY
+    answers["source"] = {
+        "commit": local.commit,
+        "tree": run(["git", "rev-parse", f"HEAD:{SOURCE_PATH}"], product),
+        "entries": run(["git", "ls-tree", "-r", "HEAD", "--", SOURCE_PATH], product).splitlines(),
+    }
+
+    def probe(label, mode, target, refusal=None):
+        before = product_state(product, tracked)
+        argv = [str(product / ".venv/bin/python"), "-I", "-B", str(PROBE), mode]
+        argv += [target.model_dump_json(), TEMPLATE_PIN.ref]
+        result = subprocess.run(
+            argv, cwd=product, env=env, capture_output=True, text=True, timeout=300
+        )
+        after = product_state(product, tracked)
+        changed = state_changes(before, after)
+        answers[label] = {
+            "mode": mode,
+            "target": target.model_dump(mode="json"),
+            "returncode": result.returncode,
+            "bytes": byte_evidence(before, after, changed),
+        }
+        assert not changed, f"{mode} {label} changed {changed[:20]}"
+        if refusal is None:
+            assert result.returncode == 0, redact_diagnostic(result.stderr)[-2000:]
+            answers[label]["raw"] = json.loads(result.stdout)
+            return result.stdout, after["protected"]
+        answers[label]["refusal"] = redact_diagnostic(result.stderr.strip().splitlines()[-1])
+        assert result.returncode != 0 and refusal in answers[label]["refusal"], answers[label]
+        return None
+
+    def substituted(path, content, label, mode, refusal):
+        # A new inode each time: an installed file may be a hardlink into the uv cache.
+        original = path.read_bytes() if path.exists() else None
+        path.unlink(missing_ok=True)
+        path.write_bytes(content(original))
+        try:
+            probe(label, mode, local, refusal)
+        finally:
+            path.unlink()
+            if original is not None:
+                path.write_bytes(original)
+
+    manifest = product / SOURCE_PATH / "notes_source/package.yaml"
+    output, protected = probe("provenance", "source-provenance", local)
+    provenance = install.admitted_local_verification(output, local, protected)
+    assert provenance.source.tree == answers["source"]["tree"]
+    assert provenance.head == local.commit and provenance.installed is None
+    answers["provenance_verification"] = provenance.model_dump(mode="json")
+    package = local.package.model_dump()
+    for label, target, refusal in (
+        ("wrong_commit", local_target(product, payload, commit=parent), "source_commit_mismatch"),
+        ("wrong_path", local_target(product, payload, path="packages/other"), "path_untracked"),
+        (
+            "wrong_version",
+            local_target(product, payload, package=package | {"version": "1.0.1"}),
+            "package_identity_changed",
+        ),
+        (
+            "wrong_distribution",
+            local_target(product, payload, package=package | {"distribution": "codegen-kit-x"}),
+            "package_identity_changed",
+        ),
+    ):
+        probe(label, "source-provenance", target, refusal)
+    substituted(
+        manifest,
+        lambda original: original + b"# substituted\n",
+        "tracked_source_changed",
+        "source-provenance",
+        "source_changed",
+    )
+    substituted(
+        manifest.with_name("extra.py"),
+        lambda _: b"",
+        "untracked_source_input",
+        "source-provenance",
+        "source_uncommitted",
+    )
+    refusal = None
+    try:
+        install.admitted_local_verification(
+            output, local.model_copy(update={"repository_id": "repo-other"}), protected
+        )
+    except install.InstallExecutionError as error:
+        refusal = str(error)
+    assert refusal == "local_verification_mismatch: target.repository_id"
+    answers["other_repository_refusal"] = refusal
+    assert not marker.exists()
+
+    kit = str(product / ".venv/bin/kit")
+    argv = [kit, "check-install", "notes-source", "--json", "--package-source", SOURCE_PATH]
+    argv += ["--version", local.package.version, "--product-root", str(product)]
+    before = product_state(product, tracked)
+    answer = subprocess.run(
+        argv,
+        cwd=product,
+        env=env | {"PYTHONDONTWRITEBYTECODE": "1"},
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    changed = state_changes(before, product_state(product, tracked))
+    assert not changed, f"check-install changed {changed[:20]}"
+    preflight = install.admitted_preflight(answer.returncode, answer.stdout, local)
+    assert not preflight.outstanding_glue(local)
+    answers["preflight"] = {"result": preflight.model_dump(mode="json"), "unchanged": True}
+    run([kit, "add", "notes-source", "--package-source", SOURCE_PATH], product, env)
+    # Only a package that declares a default binding is bound; this one declares none.
+    assert provenance.source.default_binding is None
+    answers["bind"] = "not_applicable: the package declares no default binding"
+    run(["make", "generate-from-spec"], product, env)
+    answers["kit_add_marker_present"] = marker.exists()
+
+    output, installed_protected = probe("readback", "source-readback", local)
+    readback = install.admitted_local_verification(output, local, installed_protected, provenance)
+    answers["readback_verification"] = readback.model_dump(mode="json")
+    wheel = product / readback.installed.wheel
+    lock = tomllib.loads((product / "services/backend/uv.lock").read_text())
+    answers["observed"] = {
+        "wheel_sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+        "lock": next(
+            item for item in lock["package"] if item["name"] == local.package.distribution
+        ),
+        "requirement_source": tomllib.loads(
+            (product / "services/backend/pyproject.toml").read_text()
+        )["tool"]["uv"]["sources"][local.package.distribution],
+        "source_status": run(
+            [
+                "git",
+                "status",
+                "--porcelain",
+                "--ignored",
+                "--untracked-files=all",
+                "--",
+                SOURCE_PATH,
+            ],
+            product,
+        ),
+        "head": run(["git", "rev-parse", "HEAD"], product),
+    }
+    assert answers["observed"]["wheel_sha256"] == readback.installed.wheel_sha256
+    assert answers["observed"]["head"] == local.commit
+    site = run(
+        [
+            str(product / "services/backend/.venv/bin/python"),
+            "-I",
+            "-B",
+            "-c",
+            "import site; print(site.getsitepackages()[0])",
+        ],
+        product,
+    )
+    substituted(
+        Path(site) / "notes_source/__init__.py",
+        lambda original: original + b"# substituted\n",
+        "installed_file_changed",
+        "source-readback",
+        "installed_files_mismatch",
+    )
+    substituted(
+        manifest,
+        lambda original: original + b"# substituted\n",
+        "installed_source_changed",
+        "source-readback",
+        "source_changed",
+    )
+    refusal = None
+    try:
+        install.admitted_local_verification(
+            output, local, installed_protected | {"pyproject.toml": "0" * 64}, provenance
+        )
+    except install.InstallExecutionError as error:
+        refusal = str(error)
+    assert refusal == "local_verification_mismatch: protected_sha256"
+    answers["protected_change_refusal"] = refusal
 
 
 async def prove(output):  # noqa: PLR0915  # retained CI evidence follows one owned product
@@ -526,6 +777,9 @@ async def prove(output):  # noqa: PLR0915  # retained CI evidence follows one ow
                 "sha256": hashlib.sha256(scenario.read_bytes()).hexdigest(),
             }
             artifact["handler_scenarios"] = json.loads(scenario_result.splitlines()[-1])
+            # The local source proof runs last, on this checkout's published install head.
+            artifact["local_source"] = {}
+            prove_local_source(product, payload, artifact["local_source"])
             artifact["no_engineering"] = {
                 "executor": "scaffolder.install.run_install",
                 "task_type": "install",

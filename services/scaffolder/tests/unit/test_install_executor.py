@@ -13,6 +13,7 @@ from shared.contracts.queues.scaffold import ScaffoldMessage
 from shared.workspace_preservation import CATALOG_INSTALL_ATTEMPTS
 from src.install import (
     InstallExecutionError,
+    admitted_local_verification,
     admitted_preflight,
     attempt_checkout,
     install_environment,
@@ -765,3 +766,82 @@ def test_an_answer_that_is_not_the_local_targets_result_is_refused(answer, rc, r
     with pytest.raises(InstallExecutionError, match=refusal) as refused:
         admitted_preflight(rc, json.dumps(answer), LOCAL)
     assert refused.value.stage == "preflight"
+
+
+PROTECTED = {"pyproject.toml": "7" * 64}
+
+
+def source_probe_output(mode="provenance", **changes):
+    """`install_probe.py source-<mode>` stdout for `LOCAL`, as the fixed probe prints it."""
+    return {
+        "mode": mode,
+        "target": LOCAL.model_dump(mode="json"),
+        "head": LOCAL.commit,
+        "core_version": LOCAL.core_version,
+        "python_version": LOCAL.python_version,
+        "tooling_commit": LOCAL.tooling_commit,
+        "source": {
+            "tree": "3" * 40,
+            "entry_point": "notes:package",
+            "metadata_sha256": "4" * 64,
+            "requires_core": ">=2,<3",
+            "requires_python": None,
+            "default_binding": None,
+            "binding_sha256": None,
+        },
+        "residue": [],
+        "installed": None
+        if mode == "provenance"
+        else {
+            "wheel": "services/backend/packages/codegen_kit_notes-1.0.0-py3-none-any.whl",
+            "wheel_sha256": "5" * 64,
+            "wheel_metadata_sha256": "4" * 64,
+            "lock_sha256": "5" * 64,
+            "direct_url": "file:///w/services/backend/packages/codegen_kit_notes-1.0.0-py3-none-any.whl",
+            "version": "1.0.0",
+            "files_compared": 2,
+            "manifest_sha256": "6" * 64,
+            "binding_sha256": None,
+        },
+        **changes,
+    }
+
+
+def test_a_source_probe_reading_is_admitted_with_this_checkouts_protected_bytes():
+    provenance = admitted_local_verification(json.dumps(source_probe_output()), LOCAL, PROTECTED)
+    readback = admitted_local_verification(
+        json.dumps(source_probe_output("readback")), LOCAL, PROTECTED, provenance
+    )
+    assert (provenance.protected_sha256, readback.protected_sha256) == (PROTECTED, PROTECTED)
+    assert readback.installed.version == LOCAL.package.version
+
+
+@pytest.mark.parametrize(
+    ("output", "refusal"),
+    [
+        ("Traceback (most recent call last):", "local_verification_malformed"),
+        (json.dumps([source_probe_output()]), "local_verification_malformed"),
+        (json.dumps(source_probe_output(catalog={"commit": "d" * 40})), "malformed"),
+        (json.dumps(source_probe_output(head="b" * 40)), "local_verification_mismatch: head"),
+        (
+            json.dumps(source_probe_output(target=LOCAL.model_dump(mode="json") | {"path": "x"})),
+            "local_verification_mismatch: target.path",
+        ),
+    ],
+)
+def test_a_source_provenance_that_is_not_the_saved_targets_refuses_in_preflight(output, refusal):
+    with pytest.raises(InstallExecutionError, match=refusal) as refused:
+        admitted_local_verification(output, LOCAL, PROTECTED)
+    assert refused.value.stage == "preflight"
+
+
+def test_a_readback_changing_protected_bytes_refuses_in_readback():
+    provenance = admitted_local_verification(json.dumps(source_probe_output()), LOCAL, PROTECTED)
+    with pytest.raises(InstallExecutionError, match="mismatch: protected_sha256") as refused:
+        admitted_local_verification(
+            json.dumps(source_probe_output("readback")),
+            LOCAL,
+            {"pyproject.toml": "8" * 64},
+            provenance,
+        )
+    assert refused.value.stage == "readback"

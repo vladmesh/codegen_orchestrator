@@ -11,6 +11,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
   lexical package path) beside `CatalogInstall`; it is refused by catalog admission, not executed.
 - `InstallPreflight` reads the kit's `check-install --package-source` result and `admitted_preflight`
   checks it against a `LocalPackageInstall`; wrong-route answers refuse, local installs stay off.
+- The install probe's source modes verify a committed local package at the exact HEAD and its
+  retained wheel, lock and installed files as `LocalInstallVerification`; no route runs them yet.
 
 ## 2026-10-24
 
