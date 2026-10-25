@@ -307,10 +307,13 @@ description, refuses the completion with 409 `package_candidate_unrecordable` na
 `task_id` and `cause`, and the story keeps its status. A completion that recorded a candidate owes
 administrators its notice on the same `story_completed` record (`admin_text`, `admin_state`
 `owed`, appended to an administrator text still owed): product, story, package, path, commit,
-repository, capability and rationale, unreviewed, exclusive to that product and awaiting the
-owner's personal code and security review before any release; the owner text is unchanged.
+repository and capability, with a rationale cut only when needed, the review warning and its
+`/package-candidates/{id}` admin path. A candidate block is at most 1500 characters and the final
+administrator text is at most one Telegram message (4096 characters); carried administrator text
+is shortened with a story-named marker before a candidate block changes. The owner text is unchanged.
 Only `GET /api/admin/v2/package-candidates` (most recently recorded first) and
-`GET /api/admin/v2/package-candidates/{id}` under `require_internal_or_admin` read candidates. No
+`GET /api/admin/v2/package-candidates/{id}` under `require_internal_or_admin` read candidates for
+the read-only admin list and detail pages. No
 catalog, planner, Architect briefing, buyer or LK surface reads them, and they confer no approval,
 release or install right on any product. Deleting the product deletes its candidates.
 

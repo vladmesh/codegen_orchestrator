@@ -103,10 +103,14 @@ async def record_package_candidates(story: Story, db: AsyncSession) -> list[Pack
 # Telegram refuses a sendMessage text longer than this.
 ADMIN_TEXT_LIMIT = 4096
 CANDIDATE_BLOCK_LIMIT = 1500
+# A stored story id is at most 255 characters. Reserve room for its carried-text marker.
+CANDIDATE_TEXT_LIMIT = ADMIN_TEXT_LIMIT - 512
 RATIONALE_CUT = " [rationale truncated]"
 
 
-def _candidate_block(project: Project, story: Story, candidate: PackageCandidate) -> str:
+def _candidate_block(
+    project: Project, story: Story, candidate: PackageCandidate, limit: int
+) -> str:
     """One candidate's notice: identity facts and the warning whole, the rationale cut to fit."""
     path = f"/package-candidates/{candidate.id}"
 
@@ -122,9 +126,9 @@ def _candidate_block(project: Project, story: Story, candidate: PackageCandidate
         )
 
     text = block(candidate.rationale)
-    if len(text) <= CANDIDATE_BLOCK_LIMIT:
+    if len(text) <= limit:
         return text
-    room = CANDIDATE_BLOCK_LIMIT - len(block("")) - len(RATIONALE_CUT)
+    room = limit - len(block("")) - len(RATIONALE_CUT)
     return block(candidate.rationale[: max(room, 0)] + RATIONALE_CUT)
 
 
@@ -133,7 +137,11 @@ async def package_candidate_admin_text(
 ) -> str:
     """The administrators' notice of the candidates one completion recorded."""
     project = await db.get(Project, story.project_id)
-    return "\n\n".join(_candidate_block(project, story, candidate) for candidate in candidates)
+    separators = 2 * (len(candidates) - 1)
+    block_limit = min(CANDIDATE_BLOCK_LIMIT, (CANDIDATE_TEXT_LIMIT - separators) // len(candidates))
+    return "\n\n".join(
+        _candidate_block(project, story, candidate, block_limit) for candidate in candidates
+    )
 
 
 def bounded_admin_text(story_id: str, carried: str | None, candidate_text: str) -> str:
@@ -141,6 +149,8 @@ def bounded_admin_text(story_id: str, carried: str | None, candidate_text: str) 
 
     The candidate notice stays whole; only the carried text is shortened, with a marker.
     """
+    if len(candidate_text) > CANDIDATE_TEXT_LIMIT:
+        raise ValueError("package candidate text exceeds the one-message reserve")
     if not carried:
         return candidate_text
     combined = f"{carried}\n\n{candidate_text}"

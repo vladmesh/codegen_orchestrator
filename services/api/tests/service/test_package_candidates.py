@@ -281,3 +281,31 @@ async def test_a_short_rationale_notice_only_gains_the_admin_path(async_client, 
     path = f"/package-candidates/{candidate.id}"
     assert text.endswith(f" Full record in the admin console at {path}.")
     assert_admin_notice(text, build, "1" * 40)
+
+
+@pytest.mark.asyncio
+async def test_candidate_notice_keeps_its_block_when_carried_admin_text_is_too_long(
+    async_client, db_session
+):
+    build = await built(async_client, db_session)
+    story_id = build["owner"]["story"]
+    await post(async_client, f"/api/stories/{story_id}/human-review", {"failure": REVIEW_STOP})
+    story = await fresh(db_session, Story, story_id)
+    notification = dict(story.owner_notification)
+    notification["admin_text"] = "Earlier administrator context. " * 500
+    story.owner_notification = notification
+    await db_session.commit()
+
+    await post(
+        async_client,
+        f"/api/stories/{story_id}/accept-result",
+        {"basis": "Reviewed the product"},
+        headers={"X-Admin-Console-Operator": "candidate-fixture"},
+    )
+
+    [candidate] = await candidates(db_session, build["owner"]["project"])
+    text = (await notice(async_client, story_id)).admin_text
+    assert len(text) <= 4096
+    assert f"earlier administrator text for story {story_id} truncated" in text
+    assert f"/package-candidates/{candidate.id}" in text
+    assert_admin_notice(text, build, "1" * 40)
