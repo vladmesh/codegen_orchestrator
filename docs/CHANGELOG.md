@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-26
+
+- A health probe's status write is refused (409, nothing applied) over a lifecycle-owned application
+  status, so a late probe can no longer turn an undeployed or stopped application `down` again.
+
 ## 2026-10-25
 
 - New products scaffold from kit tag `0.12.0` (commit `8caf935f`) and carry its local-source

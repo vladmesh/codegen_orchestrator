@@ -174,3 +174,82 @@ class TestUpdateApplication:
 
         assert resp.status_code == 200
         assert application.status == "stopped"
+
+
+_PROBE_CHECKED_AT = "2030-01-01T00:00:00+00:00"
+
+
+async def _patch(application, body: dict):
+    session = _mock_session(get_return=application)
+    app.dependency_overrides[get_async_session] = lambda: session
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.patch("/api/applications/1", json=body)
+    return resp, session
+
+
+class TestProbeStatusWrite:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "lifecycle_status", ["not_deployed", "deploying", "stopping", "stopped", "undeploying"]
+    )
+    @pytest.mark.parametrize("probed", ["running", "down", "degraded"])
+    async def test_refused_over_lifecycle_status(self, _override_db, lifecycle_status, probed):
+        application = _make_application(status=lifecycle_status, response_time_ms=None)
+
+        resp, session = await _patch(
+            application,
+            {
+                "status": probed,
+                "probe": True,
+                "last_health_check": _PROBE_CHECKED_AT,
+                "response_time_ms": 5014,
+            },
+        )
+
+        assert resp.status_code == 409
+        assert application.status == lifecycle_status
+        assert application.last_health_check is None
+        assert application.response_time_ms is None
+        session.execute.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("current", ["running", "down", "degraded"])
+    @pytest.mark.parametrize("probed", ["running", "down", "degraded"])
+    async def test_applied_between_probe_owned_statuses(self, _override_db, current, probed):
+        application = _make_application(
+            status=current,
+            response_time_ms=None,
+            ssl_expires_at=None,
+            uptime_pct_24h=None,
+            reserved_ram_mb=512,
+        )
+
+        resp, session = await _patch(
+            application,
+            {
+                "status": probed,
+                "probe": True,
+                "last_health_check": _PROBE_CHECKED_AT,
+                "response_time_ms": 30,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert application.status == probed
+        assert application.response_time_ms == 30
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("lifecycle_status", ["not_deployed", "stopped", "undeploying"])
+    async def test_cannot_move_an_application_into_a_lifecycle_status(
+        self, _override_db, lifecycle_status
+    ):
+        application = _make_application()
+
+        resp, _ = await _patch(application, {"status": lifecycle_status, "probe": True})
+
+        assert resp.status_code == 422
+        assert application.status == "running"

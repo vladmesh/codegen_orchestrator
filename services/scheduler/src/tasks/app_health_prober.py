@@ -13,7 +13,7 @@ import httpx
 import structlog
 
 from shared.clients.infra_client import check_http_health
-from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.application import PROBE_OWNED_STATUSES, ApplicationStatus
 from shared.contracts.dto.incident import IncidentType
 from shared.notifications import notify_admins_best_effort
 from src.clients.api import api_client
@@ -46,8 +46,22 @@ class MonitoringDisabledError(Exception):
     """The API refused a prober incident write: the application is muted now."""
 
 
+class LifecycleOwnsStatusError(Exception):
+    """The API refused a probe status write: the lifecycle owns the status now."""
+
+
 def _refused_as_muted(exc: httpx.HTTPStatusError) -> bool:
     return exc.response.status_code == httpx.codes.CONFLICT
+
+
+async def _write_probe_status(api_client: object, app_id: int, fields: dict) -> None:
+    """Write a probe-derived status; the API refuses it over a lifecycle-owned one."""
+    try:
+        await api_client.update_application(app_id, {**fields, "probe": True})
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == httpx.codes.CONFLICT:
+            raise LifecycleOwnsStatusError from exc
+        raise
 
 
 def monitoring_generation(app) -> str:
@@ -112,8 +126,9 @@ async def check_application(
     *has_history* is False when this worker holds no failure count for the
     application. Returns updated consecutive failure count. Raises
     MonitoringDisabledError when the API refused an incident write because the
-    application's monitoring was switched off while it was being probed; no alert
-    is sent for a refused write.
+    application's monitoring was switched off while it was being probed, and
+    LifecycleOwnsStatusError when it refused the status write because a deploy,
+    stop or undeploy owns the status now; no alert is sent for a refused write.
     """
     app_id = app.id
     ports = app.ports
@@ -144,7 +159,7 @@ async def check_application(
         if ssl_expiry:
             fields["ssl_expires_at"] = ssl_expiry.isoformat()
 
-        await api_client.update_application(app_id, fields)
+        await _write_probe_status(api_client, app_id, fields)
 
         # Auto-resolve this application's SERVICE_DOWN incidents on recovery. With
         # no failure history in this worker (a restart, or monitoring re-enabled)
@@ -164,14 +179,13 @@ async def check_application(
         log.debug("app_health_ok", response_time_ms=health.get("response_time_ms"))
         consecutive_failures = 0
     else:
-        consecutive_failures += 1
-
         # Update application status to DOWN
         fields = {
             "status": ApplicationStatus.DOWN.value,
             "last_health_check": now.isoformat(),
         }
-        await api_client.update_application(app_id, fields)
+        await _write_probe_status(api_client, app_id, fields)
+        consecutive_failures += 1
 
         # Create SERVICE_DOWN incident after threshold
         if consecutive_failures >= _consecutive_failure_threshold():
@@ -251,24 +265,27 @@ async def check_application(
 async def app_health_probe_cycle(client: object | None = None) -> None:
     """Run one full cycle of application health probing.
 
-    Fetches all deployed applications, groups by server, probes each.
+    Probes each application in a probe-owned status with monitoring enabled.
     """
     client = client or api_client
 
-    # Get all applications (exclude not_deployed and those with monitoring disabled)
     apps = await client.get_applications()
     for app in apps:
-        if not app.monitoring_enabled or (
-            app.id in _monitoring_generation
-            and _monitoring_generation[app.id] != app.monitoring_changed_at
+        if (
+            not app.monitoring_enabled
+            or app.status not in PROBE_OWNED_STATUSES
+            or (
+                app.id in _monitoring_generation
+                and _monitoring_generation[app.id] != app.monitoring_changed_at
+            )
         ):
-            # Forget the failure count: after a switch, health transitions are
-            # decided from fresh probes, not from a count gathered before it.
+            # Forget the failure count: after a switch or a lifecycle status,
+            # health transitions are decided from fresh probes, not from a count
+            # gathered before it.
             _consecutive_failures.pop(app.id, None)
         _monitoring_generation[app.id] = app.monitoring_changed_at
-    deployed_apps = [
-        a for a in apps if a.status != ApplicationStatus.NOT_DEPLOYED.value and a.monitoring_enabled
-    ]
+    # The snapshot can be stale; the API guard on the status write is the authority.
+    deployed_apps = [a for a in apps if a.status in PROBE_OWNED_STATUSES and a.monitoring_enabled]
 
     if not deployed_apps:
         return
@@ -306,6 +323,11 @@ async def app_health_probe_cycle(client: object | None = None) -> None:
             # must not carry over into a later re-enable.
             _consecutive_failures.pop(app_id, None)
             logger.info("app_health_monitoring_disabled_mid_probe", app_id=app_id)
+        except LifecycleOwnsStatusError:
+            # A deploy, stop or undeploy took the status mid-probe; health is
+            # decided afresh once the application is back in a probed status.
+            _consecutive_failures.pop(app_id, None)
+            logger.info("app_health_status_owned_by_lifecycle", app_id=app_id)
         except Exception:
             logger.error(
                 "app_health_check_error",

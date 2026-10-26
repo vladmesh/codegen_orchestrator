@@ -149,3 +149,105 @@ async def test_stopping_an_application_keeps_its_port_allocations(async_client: 
     assert [allocation["port"] for allocation in await _allocations(async_client, app_id)] == [
         allocated_port
     ]
+
+
+async def _probe(client: AsyncClient, application_id: int, status_value: str):
+    return await client.patch(
+        f"/api/applications/{application_id}",
+        json={
+            "status": status_value,
+            "probe": True,
+            "last_health_check": "2030-01-01T00:00:00+00:00",
+            "response_time_ms": 5014,
+        },
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "lifecycle_status",
+    [
+        ApplicationStatus.NOT_DEPLOYED,
+        ApplicationStatus.DEPLOYING,
+        ApplicationStatus.STOPPING,
+        ApplicationStatus.STOPPED,
+        ApplicationStatus.UNDEPLOYING,
+    ],
+)
+async def test_probe_write_never_replaces_a_lifecycle_status(
+    async_client: AsyncClient, lifecycle_status: ApplicationStatus
+):
+    """A refused probe write changes no field and no port reservation."""
+    server_handle = await _server(async_client)
+    app_id = await _application(async_client, await _project_with_repo(async_client), server_handle)
+    await _allocate(async_client, server_handle, app_id, "backend")
+    lifecycle = await async_client.patch(
+        f"/api/applications/{app_id}", json={"status": lifecycle_status.value}
+    )
+    assert lifecycle.status_code == HTTPStatus.OK, lifecycle.text
+    allocations = await _allocations(async_client, app_id)
+
+    for probed in (ApplicationStatus.DOWN, ApplicationStatus.RUNNING):
+        refused = await _probe(async_client, app_id, probed.value)
+        assert refused.status_code == HTTPStatus.CONFLICT, refused.text
+
+    stored = (await async_client.get(f"/api/applications/{app_id}")).json()
+    assert stored["status"] == lifecycle_status.value
+    assert stored["last_health_check"] is None
+    assert stored["response_time_ms"] is None
+    assert await _allocations(async_client, app_id) == allocations
+
+
+@pytest.mark.asyncio
+async def test_probe_writes_move_between_probe_owned_statuses(async_client: AsyncClient):
+    server_handle = await _server(async_client)
+    app_id = await _application(async_client, await _project_with_repo(async_client), server_handle)
+    allocated_port = await _allocate(async_client, server_handle, app_id, "backend")
+
+    for probed in (
+        ApplicationStatus.DOWN,
+        ApplicationStatus.DEGRADED,
+        ApplicationStatus.RUNNING,
+        ApplicationStatus.DOWN,
+    ):
+        accepted = await _probe(async_client, app_id, probed.value)
+        assert accepted.status_code == HTTPStatus.OK, accepted.text
+        assert accepted.json()["status"] == probed.value
+        assert accepted.json()["response_time_ms"] == 5014
+    assert [allocation["port"] for allocation in await _allocations(async_client, app_id)] == [
+        allocated_port
+    ]
+
+
+@pytest.mark.asyncio
+async def test_probe_down_after_undeploy_keeps_the_application_undeployed(
+    async_client: AsyncClient,
+):
+    """An in-flight probe finishing after the undeploy cannot re-hold the reservation."""
+    server_handle = await _server(async_client)
+    app_id = await _application(async_client, await _project_with_repo(async_client), server_handle)
+    await _allocate(async_client, server_handle, app_id, "backend")
+
+    undeployed = await async_client.patch(
+        f"/api/applications/{app_id}",
+        json={"status": ApplicationStatus.NOT_DEPLOYED.value},
+    )
+    assert undeployed.status_code == HTTPStatus.OK, undeployed.text
+    late_probe = await _probe(async_client, app_id, ApplicationStatus.DOWN.value)
+
+    assert late_probe.status_code == HTTPStatus.CONFLICT, late_probe.text
+    stored = (await async_client.get(f"/api/applications/{app_id}")).json()
+    assert stored["status"] == ApplicationStatus.NOT_DEPLOYED.value
+    assert await _allocations(async_client, app_id) == []
+
+
+@pytest.mark.asyncio
+async def test_probe_write_cannot_set_a_lifecycle_status(async_client: AsyncClient):
+    server_handle = await _server(async_client)
+    app_id = await _application(async_client, await _project_with_repo(async_client), server_handle)
+
+    rejected = await _probe(async_client, app_id, ApplicationStatus.STOPPED.value)
+
+    assert rejected.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, rejected.text
+    stored = (await async_client.get(f"/api/applications/{app_id}")).json()
+    assert stored["status"] == ApplicationStatus.RUNNING.value
