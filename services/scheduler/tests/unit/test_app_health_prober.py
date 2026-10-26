@@ -112,6 +112,7 @@ class TestCheckApplication:
         fields = update_kwargs[1]
         assert fields["response_time_ms"] == 45
         assert fields["status"] == "running"
+        assert fields["probe"] is True
         assert "last_health_check" in fields
 
     @pytest.mark.asyncio
@@ -240,6 +241,10 @@ class TestCheckApplication:
         )
 
 
+_FAIL = {"healthy": False, "error": "timeout", "response_time_ms": 5000}
+_OK = {"healthy": True, "status_code": 200, "response_time_ms": 30}
+
+
 class TestAppHealthProbeCycle:
     """Tests for the full probe cycle."""
 
@@ -251,12 +256,17 @@ class TestAppHealthProbeCycle:
         mod._consecutive_failures.clear()
 
     @pytest.mark.asyncio
-    async def test_skips_not_deployed_apps(self, mock_api_client):
-        """Apps with status not_deployed should not be probed."""
+    @pytest.mark.parametrize(
+        "lifecycle_status", ["not_deployed", "deploying", "stopping", "stopped", "undeploying"]
+    )
+    async def test_skips_lifecycle_owned_apps(self, mock_api_client, lifecycle_status):
+        """Apps whose status the lifecycle owns are not probed and keep no failure count."""
         from src.tasks import app_health_prober
 
+        app_health_prober._consecutive_failures[1] = 2
+        mock_api_client.get_servers.return_value = [_server()]
         mock_api_client.get_applications.return_value = [
-            _make_app(app_id=1, status="not_deployed"),
+            _make_app(app_id=1, status=lifecycle_status),
         ]
 
         with (
@@ -268,6 +278,8 @@ class TestAppHealthProbeCycle:
             await app_health_prober.app_health_probe_cycle(mock_api_client)
 
         mock_http.assert_not_called()
+        mock_api_client.update_application.assert_not_called()
+        assert 1 not in app_health_prober._consecutive_failures
 
     @pytest.mark.asyncio
     async def test_probes_running_apps(self, mock_api_client):
@@ -326,9 +338,47 @@ class TestAppHealthProbeCycle:
 
         mock_http.assert_not_called()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("health", "failures", "open_incident"),
+        [(_FAIL, 2, False), (_OK, 3, True)],
+        ids=["service_down", "recovery"],
+    )
+    async def test_refused_status_write_counts_and_alerts_nothing(
+        self, mock_api_client, health, failures, open_incident
+    ):
+        """The lifecycle took the status mid-probe: no incident, no alert, no count."""
+        import httpx
 
-_FAIL = {"healthy": False, "error": "timeout", "response_time_ms": 5000}
-_OK = {"healthy": True, "status_code": 200, "response_time_ms": 30}
+        from src.tasks import app_health_prober
+
+        mock_api_client.update_application = AsyncMock(
+            side_effect=httpx.HTTPStatusError(
+                "lifecycle owns status",
+                request=httpx.Request("PATCH", "http://api/applications/1"),
+                response=httpx.Response(409),
+            )
+        )
+        if open_incident:
+            mock_api_client.list_active_incidents.return_value = [_make_incident(incident_id=9)]
+        mock_api_client.get_servers.return_value = [_server()]
+        mock_api_client.get_applications.return_value = [_make_app(app_id=1)]
+        app_health_prober._consecutive_failures[1] = failures
+        with (
+            patch.object(app_health_prober, "check_http_health", new_callable=AsyncMock) as http,
+            patch.object(app_health_prober, "check_ssl_expiry", new_callable=AsyncMock) as ssl,
+            patch.object(
+                app_health_prober, "notify_admins_best_effort", new_callable=AsyncMock
+            ) as notify,
+        ):
+            http.return_value = health
+            ssl.return_value = None
+            await app_health_prober.app_health_probe_cycle(mock_api_client)
+
+        notify.assert_not_called()
+        mock_api_client.create_incident.assert_not_called()
+        mock_api_client.resolve_incident.assert_not_called()
+        assert 1 not in app_health_prober._consecutive_failures
 
 
 def _server(handle: str = "vps-123"):

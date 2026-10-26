@@ -13,7 +13,7 @@ from sqlalchemy.orm import selectinload
 import structlog
 
 from shared.clients.github import GitHubAppClient
-from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.application import PROBE_OWNED_STATUSES, ApplicationStatus
 from shared.contracts.dto.incident import IncidentStatus, IncidentType
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.story import StoryStatus
@@ -243,10 +243,19 @@ async def update_application(
     app_update: ApplicationUpdate,
     db: AsyncSession = Depends(get_async_session),
 ) -> Application:
-    """Update application status and metadata."""
-    application = await db.get(Application, application_id)
+    """Update application status and metadata under the application's row lock.
+
+    A probe write is refused whole with 409 when the current status is owned by
+    the lifecycle; no field of the row changes.
+    """
+    application = await db.get(Application, application_id, with_for_update=True)
     if not application:
         raise HTTPException(status_code=404, detail="Application not found")
+    if app_update.probe and application.status not in PROBE_OWNED_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Application status {application.status} is owned by its lifecycle",
+        )
 
     if app_update.status is not None:
         application.status = app_update.status
