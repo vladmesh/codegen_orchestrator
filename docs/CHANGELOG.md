@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-10-27
+
+- A local INSTALL's source probe reads the target Python with `-I -B`, so its preflight is read-only;
+  `preflight_not_read_only` names what changed, and operator `retry` releases a stopped local install.
+
 ## 2026-10-26
 
 - A health probe's status write is refused (409, nothing applied) over a lifecycle-owned application

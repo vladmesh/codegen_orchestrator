@@ -56,8 +56,8 @@ installs a protocol-v1 package from source inside the product, so a new product 
 local-source installer. A catalog INSTALL closure names only an activated catalog release; an
 admitted `LocalPackageInstall` (below) is delivered through the scheduler and scaffold queue to
 the executor that runs this installer. No planner writes a local target; the Architect writes only
-a build intent (below). Operator recovery of a local operation, candidate handling and buyer
-acceptance of a local install are outside this boundary. Existing products receive the tooling
+a build intent (below). Operator recovery of a local operation other than `retry` (below),
+candidate handling and buyer acceptance of a local install are outside this boundary. Existing products receive the tooling
 only through a Copier update.
 Its generated CI runs `quality`, `dev-smoke` and `integration` as parallel jobs on pull requests
 and manual dispatch, behind the stable required `lint-and-test` aggregate, which fails unless every
@@ -338,9 +338,10 @@ parks the task and story for a person: it is never a product glue repair, which 
 pinned commit. Publication requires the readback (`readback_unverified`), the checkpointed base
 equal to the saved commit (`base_unverified`), a mechanical preflight (`preflight_unverified`) and
 the checkpointed installation head (`head_unverified`). The scheduler admits and queues a local
-target exactly as a catalog one (below) and the scaffolder's executor runs it; operator recovery
-answers 409 `local_install_unsupported` before any mutation, and engineering admission still
-refuses every INSTALL.
+target exactly as a catalog one (below) and the scaffolder's executor runs it; operator `retry`
+releases a stopped local operation (below), `recover` and `replan` answer 409
+`local_install_unsupported` before any mutation, and engineering admission still refuses every
+INSTALL.
 
 `InstallPreflight` also reads the pinned kit's `kit check-install <package> --json
 --package-source <path>` answer, whose target is exactly `route: package_source`, `path` (the
@@ -368,7 +369,10 @@ as data the kit's own product-source containment (nested product, escape), stati
 `read_source_package` identity (name, canonical distribution, version:
 `package_identity_changed`) and `metadata_from_source` metadata (`package.yaml`, default binding
 inside its module), then `require_core` and the source's `requires-python` against the kit's
-target interpreter reading (`python_incompatible`). It builds, installs, fetches, imports and
+library target, the `services/tg_bot/.venv` interpreter's version (`python_incompatible`). The
+probe reads that version itself (`library_python_version`), running the interpreter as `-I -B`
+and checking its prefix, never through a kit helper: `-I` ignores `PYTHONDONTWRITEBYTECODE`, so
+every interpreter a source mode starts carries `-B`. It builds, installs, fetches, imports and
 writes nothing. `source-readback`, after `kit add --package-source`, `kit bind --default` only
 for a package that declares a default binding, and regeneration, repeats those reads at the same
 HEAD and reads the wheel named by the backend requirement's `tool.uv.sources` path under
@@ -451,7 +455,12 @@ actual product (`InstallPreflight`, result version 1): the exit code must be its
 target must be the catalog route at the payload's repository, commit, tag and version for
 the payload's core; anything else refuses (`preflight_malformed`, `preflight_exit_mismatch`,
 `preflight_provenance_mismatch`). Git status, protected bytes and every environment's
-installed distributions must be unchanged by both checks (`preflight_not_read_only`). The
+installed distributions must be unchanged by both checks (`preflight_not_read_only`). That
+refusal names each differing component and never its content: `git_status`,
+`protected:<path>`, `environment:<env>`, and for a local install also `lock:<path>` and
+`tree:<source|root|backend|tg_bot>` followed by up to five differing relative paths of that tree
+(a directory only when nothing below it differs) and the count of the rest, within the
+2000-character detail. The
 kit's `library_required` for a library of the closure is the installer's own next step;
 any other glue item refuses `glue_required` with the kit's files, lines and actions, and
 `incompatible` refuses with its stable code, so every product conflict — a retained
@@ -571,6 +580,15 @@ admission is a new operation, so it runs in a new attempt checkout of the review
 story head, and the retained attempt is left as it was. A cancelled
 Task remains cancelled when retry releases its reviewed blocking operation. Wrong
 cycle/operation, unrelated stop or unpublished/unverified head refuses.
+A `LocalPackageInstall` accepts only `retry`; `recover` and `replan` answer 409
+`local_install_unsupported`. Its retry requires the body's operation to be the Task's current
+one, of the Story's current cycle, `refused` or `recovery_required`, with the Task and the Story
+`waiting_human_review` and the Story's stop cause naming that operation; anything else answers 409
+(`stale_install_recovery`, `unrelated_story_stop`) and changes nothing. In one transaction it
+releases only that stop, writes the settlement note, moves the Task `waiting_human_review` →
+`backlog` → `todo` with no operation and returns the Story to `in_progress`. The scheduler then
+admits a new operation for the same saved target, and its new attempt re-verifies the owned
+remote story head against the saved commit (`source_base_mismatch`).
 
 `replan` answers the scheduler's park after a published install's PR failed CI. It
 requires the `done` Task's current `published` operation, the scheduler's

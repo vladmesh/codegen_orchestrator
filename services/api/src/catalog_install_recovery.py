@@ -45,9 +45,11 @@ async def operator_install_recovery(task_id, body, actor, db, redis=None):
     from .routers.projects_guards import load_locked_project
 
     task, locked, _, story_id = await _lock_dispatch_tasks(task_id, db)
-    if task.type == "install" and isinstance(
+    # A local install has no published head to recover and no catalog to replan against.
+    local = task.type == "install" and isinstance(
         parse_install_target(task.install), LocalPackageInstall
-    ):
+    )
+    if local and body.action != "retry":
         raise HTTPException(409, {"code": "local_install_unsupported"})
     if task.type != "install" or task.install_operation is None:
         raise HTTPException(409, {"code": "install_operation_missing"})
@@ -68,6 +70,7 @@ async def operator_install_recovery(task_id, body, actor, db, redis=None):
     )
     if (
         task.status == TaskStatus.CANCELLED.value
+        and not local
         and not owns_review
         and operation.id == body.operation_id
         and operation.state in {"refused", "recovery_required"}
@@ -91,10 +94,13 @@ async def operator_install_recovery(task_id, body, actor, db, redis=None):
         task.install_operation = operation.model_dump(mode="json")
         await db.commit()
         return InstallDecision(outcome="settled", operation=operation)
+    reviewable = {TaskStatus.WAITING_HUMAN_REVIEW.value}
+    if not local:
+        reviewable.add(TaskStatus.CANCELLED.value)
     if (
         operation.id != body.operation_id
         or operation.cycle_started_at != (story.reopened_at or story.created_at)
-        or task.status not in {TaskStatus.WAITING_HUMAN_REVIEW.value, TaskStatus.CANCELLED.value}
+        or task.status not in reviewable
         or story.status != StoryStatus.WAITING_HUMAN_REVIEW.value
         or operation.state not in {"refused", "recovery_required"}
     ):

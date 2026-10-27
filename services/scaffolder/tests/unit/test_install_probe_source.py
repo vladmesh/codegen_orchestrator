@@ -1,15 +1,23 @@
 """The source probe reads a package source and its retained wheel as data, through the kit."""
 
 import hashlib
+import json
 from pathlib import Path
 import shutil
+import subprocess
 import zipfile
 
 from framework.package_source import PackageSourceError, PackageWheelMismatchError
 from framework.preflight import PreflightIncompatibleError
 import pytest
 
-from src.install_probe import installed_files, retained_wheel, source_metadata
+from src.install import owned_tree
+from src.install_probe import (
+    installed_files,
+    library_python_version,
+    retained_wheel,
+    source_metadata,
+)
 
 DATA = Path(__file__).resolve().parents[3] / "langgraph/tests/unit/fixtures/catalog-install-v2"
 SOURCE = "packages/notebook"
@@ -129,6 +137,36 @@ def test_a_source_the_product_core_cannot_run_is_refused(tmp_path):
 def test_a_source_the_target_python_cannot_run_is_refused(tmp_path):
     with pytest.raises(ValueError, match="python_incompatible"):
         source_metadata(product(tmp_path), PAYLOAD, CORE, "3.11.9")
+
+
+def virtualenv_interpreter(args, **kwargs):
+    """A product venv's CPython: its `.pth` startup import caches bytecode unless `-B`.
+
+    `-I` ignores `PYTHONDONTWRITEBYTECODE`, so only the flag keeps the environment unchanged.
+    """
+    environment = Path(args[0]).parents[1]
+    if "-B" not in args[1 : args.index("-c")]:
+        cache = environment / "lib/python3.12/site-packages/__pycache__"
+        cache.mkdir(exist_ok=True)
+        (cache / "_virtualenv.cpython-312.pyc").write_bytes(b"bytecode")
+    stdout = json.dumps({"prefix": str(environment), "version": PYTHON})
+    return subprocess.CompletedProcess(args, 0, stdout=stdout + "\n", stderr="")
+
+
+def test_the_library_python_version_read_leaves_the_environment_byte_identical(
+    tmp_path, monkeypatch
+):
+    environment = tmp_path / "services/tg_bot/.venv"
+    (environment / "lib/python3.12/site-packages").mkdir(parents=True)
+    (environment / "lib/python3.12/site-packages/_virtualenv.pth").write_text(
+        "import _virtualenv\n"
+    )
+    (environment / "bin").mkdir()
+    (environment / "bin/python").write_text("")
+    monkeypatch.setattr("src.install_probe.subprocess.run", virtualenv_interpreter)
+    before = owned_tree(environment)
+    assert library_python_version(tmp_path) == PYTHON
+    assert owned_tree(environment) == before
 
 
 def build_wheel(root, edit=None) -> Path:
