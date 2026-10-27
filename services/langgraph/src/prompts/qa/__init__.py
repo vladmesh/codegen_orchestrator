@@ -186,8 +186,9 @@ def _output_section() -> str:
     return f"""\
 ## Output
 After storing the report, write this JSON to a file and submit it with
-`{QA_PROBE_NAME} finish <file>`. That call ends the run — make it exactly once,
-and only after every check is done.
+`{QA_PROBE_NAME} finish <file>` only after every check is done. A valid result ends
+the run. `finish` refuses any other shape, names what is wrong and keeps the run
+going: correct the file and call `finish` again.
 {_RESULT_JSON}
 Top-level `pass` is false whenever any check failed, whatever its cause.
 {_NOT_APPLICABLE_RULE}

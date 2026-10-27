@@ -412,13 +412,18 @@ class QABlockerCategory(StrEnum):
     # run is not passed, and with no product failure it is not a fix task
     # either. Its unverified requirements are the run's `unverified_checks`.
     ORDER_UNVERIFIED = "order_unverified"
+    # The executor's final result broke the result contract after the capability
+    # endpoint's bounded resubmissions. No product judgement exists; a recheck
+    # reruns QA on the same built commit.
+    QA_RESULT_INVALID = "qa_result_invalid"
     UNKNOWN = "unknown"
 
 
 #: Blockers that say the platform's QA harness or its reach into the target
 #: failed — an executor that never reached the capability endpoint, a probe the
 #: target could not perform, a harness that is not the current profile, a host
-#: the run could not take its seat on. The supervisor parks every one of them
+#: the run could not take its seat on, an executor whose result broke the result
+#: contract. The supervisor parks every one of them
 #: for operator recovery with an administrator notice, and never words any of
 #: them to the owner as something wrong with the product.
 QA_HARNESS_BLOCKERS: frozenset[QABlockerCategory] = frozenset(
@@ -429,6 +434,7 @@ QA_HARNESS_BLOCKERS: frozenset[QABlockerCategory] = frozenset(
         QABlockerCategory.SERVER_UNAVAILABLE,
         QABlockerCategory.QA_IDENTITY_UNREADABLE,
         QABlockerCategory.QA_CHECKS_UNVERIFIABLE,
+        QABlockerCategory.QA_RESULT_INVALID,
     }
 )
 

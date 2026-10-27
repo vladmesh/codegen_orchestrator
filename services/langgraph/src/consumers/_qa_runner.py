@@ -38,6 +38,7 @@ from shared.contracts.dto.run_result import (
 from shared.contracts.queues.qa import QAConfirmedOrder
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
+from shared.diagnostics import redact_diagnostic
 from shared.qa_identity import QAIdentityRejection
 from shared.telegram_access_probe import (
     build_access_probe_script,
@@ -74,6 +75,7 @@ from ..agents.qa.tools import (
 from ..clients.qa_worker import QAExecutorRun, QAExecutorUnavailable, run_qa_executor
 from ..prompts.qa import build_qa_instructions, build_qa_prompt
 from ._qa_redaction import TELEGRAM_CREDENTIAL, QARunRedaction
+from ._qa_result_shape import QAResultInvalid, decode_qa_result
 from ._qa_target import (
     CONTAINER_PROBE_ATTEMPTS,
     CONTAINER_PROBE_RETRY_DELAY,
@@ -357,52 +359,30 @@ A requirement you cannot check is a `qa_capability` check named the same way.
 The run passes only on a passing check that names a requirement.
 """
 
-_PASSED_CHECK_FIELDS = frozenset({"name", "pass", "detail"})
-_FAILED_CHECK_FIELDS = _PASSED_CHECK_FIELDS | {"cause"}
-#: A check the transport could not carry: no `pass`, no `cause`. It counts toward
-#: nothing and is kept only when the runtime recorded the refusal itself.
-_NOT_APPLICABLE_CHECK_FIELDS = frozenset({"name", "not_applicable", "detail"})
+#: The most of an invalid answer its blocker keeps; the endpoint accepts up to
+#: `MAX_VERDICT_CHARS`, and the Run result keeps this much whole.
+QA_INVALID_ANSWER_MAX_CHARS = 64 * 1024
 
 
 def _invalid_qa_payload(raw: str, reason: str) -> QAResult:
     """Fail closed when the agent's result cannot safely drive QA routing."""
+    answer = redact_diagnostic(raw)
+    if len(answer) > QA_INVALID_ANSWER_MAX_CHARS:
+        answer = (
+            answer[:QA_INVALID_ANSWER_MAX_CHARS]
+            + f"\n...[truncated: {len(answer) - QA_INVALID_ANSWER_MAX_CHARS} more characters]"
+        )
     return QAResult(
         passed=False,
         summary=f"QA output has an invalid result shape: {reason}",
         raw=raw,
-        blocker=_unknown_result_blocker(
+        blocker=QABlocker(
+            category=QABlockerCategory.QA_RESULT_INVALID,
             attempted="validate QA agent result",
             sent="QA agent final message",
-            received=raw[:2000],
+            received=f"{reason}\n\nQA agent answer:\n{answer}",
         ),
     )
-
-
-def _check_shape_error(index: int, check: object, causes: set[str]) -> str | None:
-    """Name what is wrong with one executor check, or None when its shape is valid."""
-    if isinstance(check, dict) and "telegram_step" in check:
-        if type(check["telegram_step"]) is not int or check["telegram_step"] < 1:
-            return f"check {index} telegram_step must be a positive integer"
-        check = {key: value for key, value in check.items() if key != "telegram_step"}
-    if isinstance(check, dict) and "not_applicable" in check:
-        if check["not_applicable"] is not True or set(check) != _NOT_APPLICABLE_CHECK_FIELDS:
-            return (
-                f"not-applicable check {index} must contain exactly name, "
-                "not_applicable (true), and detail fields"
-            )
-    elif not isinstance(check, dict) or not isinstance(check.get("pass"), bool):
-        return f"check {index} pass must be a boolean"
-    elif check["pass"] and set(check) != _PASSED_CHECK_FIELDS:
-        return f"passed check {index} must contain exactly name, pass, and detail fields"
-    elif not check["pass"] and set(check) != _FAILED_CHECK_FIELDS:
-        return f"failed check {index} must contain exactly name, pass, detail, and cause fields"
-    if not isinstance(check["name"], str) or not check["name"].strip():
-        return f"check {index} name must be a non-empty string"
-    if not isinstance(check["detail"], str) or not check["detail"].strip():
-        return f"check {index} detail must be a non-empty string"
-    if check.get("pass") is False and check["cause"] not in causes:
-        return f"failed check {index} cause must be one of {', '.join(sorted(causes))}"
-    return None
 
 
 def _ground_not_applicable_checks(
@@ -450,56 +430,6 @@ def _ground_not_applicable_checks(
     return grounded
 
 
-def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
-    """Fail closed unless every routing-relevant response field is valid."""
-    required_fields = {"pass", "checks", "summary"}
-    # Cleanup evidence is runner-owned, not trusted agent output.
-    allowed_fields = required_fields | {"state_changes"}
-    if not required_fields <= set(data) or not set(data) <= allowed_fields:
-        return _invalid_qa_payload(
-            raw,
-            "expected exactly pass, checks, and summary fields",
-        )
-
-    if not isinstance(data["pass"], bool):
-        return _invalid_qa_payload(raw, "pass must be a boolean")
-    if not isinstance(data["summary"], str):
-        return _invalid_qa_payload(raw, "summary must be a string")
-    if not isinstance(data["checks"], list):
-        return _invalid_qa_payload(raw, "checks must be a list")
-
-    causes = {cause.value for cause in QAFailedCheckCause}
-    for index, check in enumerate(data["checks"]):
-        shape_error = _check_shape_error(index, check, causes)
-        if shape_error:
-            return _invalid_qa_payload(raw, shape_error)
-
-    # `pass` is false exactly when a product or access check failed. A check QA
-    # had no tool for (`qa_capability`) is neither a failure nor a pass: the
-    # runner records it as unverified and decides the verdict from the checks
-    # that ran (`settle_unverified_checks`), so the executor's `pass` may say
-    # either when those are its only failures. A not-applicable check is not a
-    # failure; whether it stays one is decided by the runner's own evidence
-    # (`_ground_not_applicable_checks`), not here.
-    failed_causes = {check["cause"] for check in data["checks"] if check.get("pass") is False}
-    judged_failure = bool(
-        failed_causes
-        - {
-            QAFailedCheckCause.QA_CAPABILITY.value,
-            QAFailedCheckCause.QA_TOOLING.value,
-        }
-    )
-    if failed_causes and not judged_failure:
-        return None
-    if data["pass"] is judged_failure:
-        return _invalid_qa_payload(
-            raw,
-            "pass must be false exactly when a product or qa_access check failed",
-        )
-
-    return None
-
-
 def parse_qa_result(
     raw: str, *, transport_refusals: Sequence[QATelegramProbeEvidence] = ()
 ) -> QAResult:
@@ -522,48 +452,10 @@ def parse_qa_result(
             ),
         )
 
-    json_str = raw.strip()
-
     try:
-        wrapper = json.loads(json_str)
-        if isinstance(wrapper, dict) and wrapper.get("type") == "result":
-            json_str = wrapper.get("result", "")
-    except json.JSONDecodeError:
-        pass  # Not a wrapper, continue with raw
-
-    code_block_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", json_str, re.DOTALL)
-    if code_block_match:
-        json_str = code_block_match.group(1).strip()
-
-    try:
-        data = json.loads(json_str)
-    except json.JSONDecodeError:
-        return QAResult(
-            passed=False,
-            summary=f"Failed to parse QA output as JSON: {raw[:200]}",
-            raw=raw,
-            blocker=_unknown_result_blocker(
-                attempted="parse QA agent result",
-                sent="QA agent final message",
-                received=raw[:2000],
-            ),
-        )
-
-    if not isinstance(data, dict):
-        return QAResult(
-            passed=False,
-            summary="QA output is not a result object",
-            raw=raw,
-            blocker=_unknown_result_blocker(
-                attempted="validate QA agent result",
-                sent="QA agent final message",
-                received=raw[:2000],
-            ),
-        )
-
-    invalid_result = _validate_qa_payload(data, raw)
-    if invalid_result:
-        return invalid_result
+        data = decode_qa_result(raw)
+    except QAResultInvalid as exc:
+        return _invalid_qa_payload(raw, str(exc))
 
     checks = _ground_not_applicable_checks(data["checks"], transport_refusals)
     return QAResult(

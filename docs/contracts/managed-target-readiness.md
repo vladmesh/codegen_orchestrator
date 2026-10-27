@@ -115,8 +115,23 @@ after the one-shot identity connects; a wrapper refusal is
 `qa_target_profile_stale`, and a contract read that ends other than read, absent,
 outside `/app` or over the limit is `qa_target_profile_stale` or
 `qa_probe_unavailable`. `QA_HARNESS_BLOCKERS` park the story in human review with
-an administrator notice naming `recheck-qa` and owner wording that blames no
-product; `qa_target_profile_stale` is operator-recheckable.
+an administrator notice naming `recheck-qa` and quoting at most 1500 characters of
+`received`, and owner wording that blames no product; `qa_target_profile_stale` is
+operator-recheckable.
+
+**The executor's result contract.** The result submitted with `qa finish` is one JSON
+object with exactly `pass`, `checks` and `summary` (`state_changes` is tolerated and
+ignored), each check in one of the shapes below.
+`services/langgraph/src/consumers/_qa_result_shape.py` is the one validator: the
+capability endpoint's `submit_qa_result` and the runner's `parse_qa_result` both call
+it. The endpoint refuses an invalid result with a 400 naming the unexpected and
+missing top-level keys or the failing check index, and the run goes on so the agent
+can call `finish` again. After `MAX_RESULT_REFUSALS` (3) refusals the next invalid
+result is kept and ends the run as `qa_result_invalid`, a `QA_HARNESS_BLOCKERS` member:
+`received` names the broken rule, then the agent's whole answer through
+`redact_diagnostic`, cut at 64 KiB with a truncation marker. `recheck-qa` accepts
+`qa_result_invalid`, and of `unknown` blockers only one whose `attempted` is exactly
+`validate QA agent result`; it redeploys the recorded built commit and reruns QA.
 
 Every failed check in an executor verdict carries a `cause`, and the runner refuses
 one without it or outside `QAFailedCheckCause`: `product`, `qa_capability` (no QA

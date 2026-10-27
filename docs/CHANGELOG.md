@@ -7,6 +7,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 - A local INSTALL's source probe reads the target Python with `-I -B`, so its preflight is read-only;
   `preflight_not_read_only` names what changed, and operator `retry` releases a stopped local install.
+- `qa finish` refuses an invalid QA result by name so the agent can resubmit; the last one ends the run as
+  recheckable `qa_result_invalid` keeping the answer up to 64 KiB, and `recheck-qa` accepts its untyped form.
 
 ## 2026-10-26
 

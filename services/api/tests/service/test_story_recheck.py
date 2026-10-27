@@ -322,3 +322,62 @@ async def test_a_repaired_administrative_account_can_be_rechecked(
     )
     assert message["story_id"] == parked["story_id"]
     assert message["application_id"] == parked["application_id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "category",
+    ["qa_result_invalid", "unknown"],
+    ids=["typed", "untyped"],
+)
+async def test_an_invalid_executor_result_can_be_rechecked(
+    async_client: AsyncClient, redis_client: Redis, category: str
+) -> None:
+    """QA never judged the deployment, so the recheck redeploys the built commit and reruns QA."""
+    parked = await _story_quarantined_by(
+        async_client,
+        category=category,
+        attempted="validate QA agent result",
+        sent="QA agent final message",
+        received='{"pass": true, "checks": [], "report": "# QA"}',
+    )
+    before = await redis_client.xlen("deploy:queue")
+
+    rechecked = await async_client.post(
+        f"/api/stories/{parked['story_id']}/recheck-qa",
+        json={"basis": "The QA executor answered with an invalid result shape."},
+        headers={"X-Admin-Console-Operator": "shared-console"},
+    )
+
+    assert rechecked.status_code == HTTPStatus.OK, rechecked.text
+    assert rechecked.json()["status"] == "deploying"
+    assert await redis_client.xlen("deploy:queue") == before + 1
+    message = json.loads(
+        decode_redis_fields((await redis_client.xrevrange("deploy:queue", count=1))[0][1])["data"]
+    )
+    assert message["story_id"] == parked["story_id"]
+    assert message["deployed_commit_sha"] == BUILT_SHA
+
+
+@pytest.mark.asyncio
+async def test_another_unknown_blocker_is_still_refused(
+    async_client: AsyncClient, redis_client: Redis
+) -> None:
+    parked = await _story_quarantined_by(
+        async_client,
+        category="unknown",
+        attempted="parse QA agent result",
+        sent="QA agent final message",
+        received="not json at all",
+    )
+    before = await redis_client.xlen("deploy:queue")
+
+    refused = await async_client.post(
+        f"/api/stories/{parked['story_id']}/recheck-qa",
+        json={"basis": "Try again."},
+        headers={"X-Admin-Console-Operator": "shared-console"},
+    )
+
+    assert refused.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, refused.text
+    assert "'unknown' cannot be cleared by recheck" in refused.text
+    assert await redis_client.xlen("deploy:queue") == before
