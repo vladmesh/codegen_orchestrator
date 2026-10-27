@@ -105,16 +105,28 @@ def _offered_by_id(catalog: KitCatalog) -> dict[str, InstallablePackage]:
 
 
 def capability_offers(catalog: KitCatalog) -> list[CapabilityOffer]:
-    """What the activated catalog offers as ready modules, in user-level words only."""
-    return [
-        CapabilityOffer(
-            capability_id=capability_id(item.name),
-            summary=item.package.summary,
-            phrases=list(item.package.capabilities),
+    """What the activated catalog offers as ready modules, in user-level words only.
+
+    A summary that names another offered package names it by that package's capability id.
+    """
+    offered = [item for item in catalog.packages if _offered(item)]
+    names = {
+        item.name: re.compile(rf"(?<![\w-]){re.escape(item.name)}(?![\w-])") for item in offered
+    }
+    offers = []
+    for item in offered:
+        summary = item.package.summary
+        for other, pattern in names.items():
+            if other != item.name:
+                summary = pattern.sub(capability_id(other), summary)
+        offers.append(
+            CapabilityOffer(
+                capability_id=capability_id(item.name),
+                summary=summary,
+                phrases=list(item.package.capabilities),
+            )
         )
-        for item in catalog.packages
-        if _offered(item)
-    ]
+    return offers
 
 
 class PreviewRefused(Exception):  # noqa: N818 - a typed answer, raised to unwind one preview

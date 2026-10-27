@@ -27,6 +27,7 @@ from src.kit_catalog import KitCatalogFailure, KitCatalogUnavailable
 
 PROJECT_ID = "5b1d0c9e-0f6a-4c55-9a43-6f0f1a7e2b10"
 CHANNELS = capability_id("tg-channels")
+RANKING = capability_id("ranking")
 #: What must never reach the PO model: package, distribution, version, key, recipe, commit.
 TECHNICAL = (
     "tg-channels",
@@ -118,6 +119,8 @@ def test_the_po_prompt_lists_capabilities_without_packages(activated_kit_catalog
     )
     assert isinstance(system, SystemMessage)
     assert f"- {CHANNELS}: Public Telegram channel lists" in system.content
+    assert f"- {RANKING}: Deterministic ranking of the caller's {CHANNELS} posts" in system.content
+    assert ": One-time text reminders that a product user schedules" in system.content
     assert "preview_capabilities" in system.content
     for technical in TECHNICAL:
         assert technical not in system.content

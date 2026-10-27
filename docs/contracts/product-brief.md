@@ -447,7 +447,8 @@ One decision, two projections, kept apart by type
 (`shared/contracts/dto/capability_preview.py`):
 
 * *Product* — what the PO prompt, its tools, their results and the brief show: opaque
-  capability ids with the catalog's user-level summary and phrases, a route per request
+  capability ids with the catalog's user-level summary (another offered package it names appears
+  as that package's capability id) and phrases, a route per request
   (`module`, `module_with_glue`, `from_scratch`, `impossible`) with its reason, questions
   (`question_id`, kind, required, choices, list limits) and limitations (platform quota).
   No package, module name, version, catalog entry, install recipe or settings key.
