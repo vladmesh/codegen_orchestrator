@@ -310,6 +310,32 @@ async def test_a_source_check_that_writes_any_byte_refuses(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_a_source_check_that_writes_an_environment_names_the_tree_and_paths(
+    tmp_path, monkeypatch
+):
+    cache = "lib/python3.12/site-packages/__pycache__"
+    written = [f"{cache}/_virtualenv.cpython-312.pyc"]
+    written += [f"{cache}/module{at}.cpython-312.pyc" for at in range(5)]
+
+    def write(args):
+        if "source-provenance" in args:
+            for item in written:
+                path = attempt(tmp_path) / "services/tg_bot/.venv" / item
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"cache")
+
+    calls, command = local_product(tmp_path, write)
+    with pytest.raises(InstallExecutionError) as refused:
+        await execute(tmp_path, command, monkeypatch)
+    assert str(refused.value) == (
+        "preflight_not_read_only: the product changed under preflight: tree:tg_bot ("
+        + ", ".join(sorted(written)[:5])
+        + ", +1 more)"
+    )
+    assert refused.value.stage == "preflight"
+
+
+@pytest.mark.asyncio
 async def test_a_protected_byte_changed_by_the_install_refuses_before_staging(
     tmp_path, monkeypatch
 ):

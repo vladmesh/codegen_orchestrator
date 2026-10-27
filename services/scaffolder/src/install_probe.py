@@ -75,15 +75,11 @@ def recorded_template_commit_matches(recorded, ref):
     return bool(re.fullmatch(r"[0-9a-f]{40}", ref) and described and ref.startswith(described[1]))
 
 
-def installed(root, service, distribution):
+def service_read(root, service, code, *args):
+    """The JSON a fixed read prints in the service's own interpreter, which writes no bytecode."""
     environment = root / f"services/{service}/.venv"
-    code = (
-        "import sys, json; from importlib.metadata import distribution; "
-        "d=distribution(sys.argv[1]); print(json.dumps({'prefix':sys.prefix, "
-        "'version':d.version, 'direct_url':d.read_text('direct_url.json')}))"
-    )
     result = subprocess.run(
-        [str(environment / "bin/python"), "-I", "-B", "-c", code, distribution],
+        [str(environment / "bin/python"), "-I", "-B", "-c", code, *args],
         capture_output=True,
         text=True,
         check=True,
@@ -93,6 +89,24 @@ def installed(root, service, distribution):
     if Path(evidence["prefix"]).resolve() != environment.resolve():
         raise ValueError("environment_unowned: service interpreter prefix")
     return evidence
+
+
+def installed(root, service, distribution):
+    code = (
+        "import sys, json; from importlib.metadata import distribution; "
+        "d=distribution(sys.argv[1]); print(json.dumps({'prefix':sys.prefix, "
+        "'version':d.version, 'direct_url':d.read_text('direct_url.json')}))"
+    )
+    return service_read(root, service, code, distribution)
+
+
+def library_python_version(root):
+    """The tg_bot interpreter's version, the kit's library target, read without a write."""
+    code = (
+        "import sys, json, platform; "
+        "print(json.dumps({'prefix':sys.prefix, 'version':platform.python_version()}))"
+    )
+    return service_read(root, "tg_bot", code)["version"]
 
 
 def validate_binding_settings(root, binding):
@@ -516,7 +530,7 @@ def source_probe(mode, payload, ref):
     head, tree, residue = committed_source(root, payload, git)
     if SOURCE_MODES[mode] == "provenance" and residue:
         raise ValueError("source_uncommitted: the source directory holds uncommitted entries")
-    python = _library_python_version(root)
+    python = library_python_version(root)
     source = {"tree": tree, **source_metadata(root, payload, trusted["core"], python)}
     return {
         "mode": SOURCE_MODES[mode],

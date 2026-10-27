@@ -435,7 +435,7 @@ async def test_a_target_naming_another_product_of_the_same_buyer_is_never_admitt
 
 
 @pytest.mark.asyncio
-async def test_lost_local_lease_keeps_its_proof_and_operator_recovery_stays_refused(
+async def test_lost_local_lease_keeps_its_proof_and_only_operator_retry_releases_it(
     async_client, db_session
 ):
     from src.dependencies import create_lk_jwt
@@ -477,15 +477,26 @@ async def test_lost_local_lease_keeps_its_proof_and_operator_recovery_stays_refu
         {"telegram_id": uuid.uuid4().int % 1_000_000_000, "is_admin": True},
         201,
     )
-    for action in ("retry", "recover", "replan"):
+    headers = {"X-Internal-Key": "", "Authorization": f"Bearer {create_lk_jwt(admin['id'])}"}
+    for action in ("recover", "replan"):
         recovery = await async_client.post(
             f"/api/tasks/{task['id']}/catalog-install/recovery",
-            headers={"X-Internal-Key": "", "Authorization": f"Bearer {create_lk_jwt(admin['id'])}"},
+            headers=headers,
             json={"operation_id": operation["id"], "action": action},
         )
         assert recovery.status_code == 409 and "local_install_unsupported" in recovery.text
     read = (await async_client.get(f"/api/tasks/{task['id']}")).json()
     assert (read["status"], read["install_operation"]) == ("waiting_human_review", operation)
+    retried = await async_client.post(
+        f"/api/tasks/{task['id']}/catalog-install/recovery",
+        headers=headers,
+        json={"operation_id": operation["id"], "action": "retry"},
+    )
+    assert retried.status_code == 200, retried.text
+    read = (await async_client.get(f"/api/tasks/{task['id']}")).json()
+    assert (read["status"], read["install_operation"]) == ("todo", None)
+    story = (await async_client.get(f"/api/stories/{task['story_id']}")).json()
+    assert (story["status"], story["quarantine_reason"]) == ("in_progress", None)
     await no_paid_work(db_session, task)
 
 

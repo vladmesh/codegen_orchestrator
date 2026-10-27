@@ -49,6 +49,8 @@ COMMAND_TIMEOUT = 600
 PRODUCT_ENVIRONMENTS = ("root", "backend", "tg_bot")
 #: A source check's interpreters, the kit's children included, leave no bytecode behind.
 NO_BYTECODE = {"PYTHONDONTWRITEBYTECODE": "1"}
+#: How many differing paths a `preflight_not_read_only` refusal names per changed tree.
+CHANGED_PATHS = 5
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 
 
@@ -172,13 +174,58 @@ def source_read_state(root, source, tracked):
     trees = {"source": root / source}
     trees |= {env: _environment(root, env) for env in PRODUCT_ENVIRONMENTS}
     return {
-        "locks": {
+        "lock": {
             name: hashlib.sha256((root / name).read_bytes()).hexdigest()
             for name in tracked
             if Path(name).name == "uv.lock"
         },
-        "trees": {name: owned_tree(path) for name, path in trees.items()},
+        "tree": {name: owned_tree(path) for name, path in trees.items()},
     }
+
+
+def changed_paths(old, new):
+    """Up to `CHANGED_PATHS` differing entries of two `owned_tree` reads, and the rest's count.
+
+    A directory is named only when nothing below it differs.
+    """
+    paths = sorted(
+        Path(path).parts for path in old.keys() | new.keys() if old.get(path) != new.get(path)
+    )
+    leaves = [
+        "/".join(parts)
+        for at, parts in enumerate(paths)
+        if at + 1 == len(paths) or paths[at + 1][: len(parts)] != parts
+    ]
+    shown = leaves[:CHANGED_PATHS]
+    if len(leaves) > len(shown):
+        shown.append(f"+{len(leaves) - len(shown)} more")
+    return shown
+
+
+def read_state_changes(before, after):
+    """Which compared components differ, by name only, never by content.
+
+    Each is `git_status` or `<component>:<name>`; a changed tree also names its paths.
+    """
+    changed = ["git_status"] if before["git_status"] != after["git_status"] else []
+    for component, value in before.items():
+        if component == "git_status":
+            continue
+        for name in sorted(value.keys() | after[component].keys()):
+            old, new = value.get(name), after[component].get(name)
+            if old == new:
+                continue
+            if component == "tree":
+                changed.append(f"tree:{name} ({', '.join(changed_paths(old, new))})")
+            else:
+                changed.append(f"{component}:{name}")
+    return changed
+
+
+def not_read_only(stage, before, after, head, base):
+    detail = "preflight_not_read_only: the product changed under preflight: "
+    detail += "; ".join(read_state_changes(before, after))
+    return InstallExecutionError(stage, detail[:2000], head, base)
 
 
 def product_environment(root, *trusted):
@@ -359,8 +406,12 @@ async def run_install(context, settings, git_url, token, fence) -> InstallResult
 
     async def read_only_state():
         _, status = await command(["git", "status", "--porcelain", "--untracked-files=all"])
-        state = (status, protected_files(root, tracked), environment_fingerprint(root))
-        return (*state, source_read_state(root, install.path, tracked)) if local else state
+        state = {
+            "git_status": status,
+            "protected": protected_files(root, tracked),
+            "environment": environment_fingerprint(root),
+        }
+        return state | source_read_state(root, install.path, tracked) if local else state
 
     def protected_changes():
         return [
@@ -410,7 +461,7 @@ async def run_install(context, settings, git_url, token, fence) -> InstallResult
         await command(["sh", "scripts/prepare-env.sh", *PRODUCT_ENVIRONMENTS])
         stage = "preflight"
         before = await read_only_state()
-        protected = before[1]
+        protected = before["protected"]
         payload = install.model_dump_json()
         probe = str(Path(__file__).with_name("install_probe.py"))
         python = str(root / ".venv/bin/python")
@@ -450,10 +501,8 @@ async def run_install(context, settings, git_url, token, fence) -> InstallResult
             command_env=check_env,
             accept=tuple(PREFLIGHT_EXIT_CODES.values()),
         )
-        if await read_only_state() != before:
-            raise InstallExecutionError(
-                stage, "preflight_not_read_only: the product changed under preflight", head, base
-            )
+        if (after := await read_only_state()) != before:
+            raise not_read_only(stage, before, after, head, base)
         result = admitted_preflight(rc, answer, install)
         preflight = result
         if result.status == "incompatible":
@@ -477,13 +526,8 @@ async def run_install(context, settings, git_url, token, fence) -> InstallResult
                 [python, "-I", probe, "preflight", payload, context.template_ref]
             )
             json.loads(probed)
-            if await read_only_state() != before:
-                raise InstallExecutionError(
-                    stage,
-                    "preflight_not_read_only: the product changed under preflight",
-                    head,
-                    base,
-                )
+            if (after := await read_only_state()) != before:
+                raise not_read_only(stage, before, after, head, base)
         # Each argv is platform-owned. No command, artifact, source override or
         # product path comes from task prose. The product CLI owns all mutation; a catalog
         # component resolves from the payload's reviewed catalog commit, never from the
