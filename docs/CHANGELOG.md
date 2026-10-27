@@ -5,6 +5,8 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-10-27
 
+- The activated catalog moves to kit 1016891b (tg-channels 0.2.0, ranking 0.1.0); an INSTALL whose manifest
+  requires an interface is planned only after its provider (`provider_missing`), so ranking follows tg-channels.
 - A local INSTALL's source probe reads the target Python with `-I -B`, so its preflight is read-only;
   `preflight_not_read_only` names what changed, and operator `retry` releases a stopped local install.
 - `qa finish` refuses an invalid QA result by name so the agent can resubmit; the last one ends the run as

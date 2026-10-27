@@ -1,0 +1,154 @@
+protocol_version: 1
+name: ranking
+version: 0.1.0
+requires_core: ">=2.4,<3"
+provides: []
+requires: [tg-channels.posts.v1]
+package_dependencies: [alembic, codegen_kit_tg_channels, fastapi, pydantic, sqlalchemy]
+http:
+  prefix: /ranking
+# The only state is the package copy of its seeded product settings, which `top` reads.
+database:
+  schema: ranking
+  migrations: codegen_kit_ranking:migrations
+deployment:
+  modes: [in_process]
+events:
+  publishes: []
+  consumes: []
+  messages: {}
+settings_schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    weights:
+      title: Weight in percent of each ranking criterion.
+      type: object
+      properties:
+        views: {type: number, minimum: 0, maximum: 100}
+        reactions: {type: number, minimum: 0, maximum: 100}
+        forwards: {type: number, minimum: 0, maximum: 100}
+        freshness: {type: number, minimum: 0, maximum: 100}
+        keywords: {type: number, minimum: 0, maximum: 100}
+      required: [views, reactions, forwards, freshness, keywords]
+      additionalProperties: false
+      default: {views: 35, reactions: 25, forwards: 20, freshness: 20, keywords: 0}
+    keywords:
+      title: Keywords, matched literally after casefold while the keywords weight is non-zero.
+      type: array
+      maxItems: 50
+      uniqueItems: true
+      items: {type: string, minLength: 1, maxLength: 100}
+      default: []
+    top_count:
+      title: Number of posts top returns.
+      type: integer
+      minimum: 1
+      maximum: 50
+      default: 10
+  additionalProperties: false
+setting_seeds:
+  - {key: weights, scope: product}
+  - {key: keywords, scope: product}
+  - {key: top_count, scope: product}
+jobs_schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties: {}
+  additionalProperties: false
+timers: []
+environment: []
+resources: []
+actions:
+  - name: rank
+    summary: Rank the supplied publications under the supplied weights and keywords.
+    operation: {method: POST, path: /rank}
+    input:
+      type: object
+      properties:
+        publications:
+          type: array
+          maxItems: 1000
+          items: &publication
+            type: object
+            properties:
+              id: {type: string, minLength: 1, maxLength: 200}
+              date: {type: string, format: date-time}
+              channel:
+                anyOf: [{type: string, maxLength: 64}, {type: 'null'}]
+              url:
+                anyOf: [{type: string, maxLength: 2048}, {type: 'null'}]
+              text:
+                anyOf: [{type: string, maxLength: 10000}, {type: 'null'}]
+              views: &metric
+                anyOf: [{type: integer, minimum: 0, maximum: 1000000000000}, {type: 'null'}]
+              reactions: *metric
+              forwards: *metric
+            required: [id, date]
+            additionalProperties: false
+        settings:
+          type: object
+          properties:
+            weights:
+              type: object
+              properties:
+                views: &percent {type: number, minimum: 0, maximum: 100}
+                reactions: *percent
+                forwards: *percent
+                freshness: *percent
+                keywords: *percent
+              required: [views, reactions, forwards, freshness, keywords]
+              additionalProperties: false
+            keywords:
+              type: array
+              maxItems: 50
+              items: {type: string, minLength: 1, maxLength: 100}
+              default: []
+          required: [weights]
+          additionalProperties: false
+        limit:
+          anyOf: [{type: integer, minimum: 1}, {type: 'null'}]
+        now:
+          anyOf: [{type: string, format: date-time}, {type: 'null'}]
+        freshness_half_life_hours:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 8760
+          default: 24.0
+      required: [publications, settings]
+      additionalProperties: false
+    output:
+      type: object
+      properties:
+        top:
+          type: array
+          items:
+            type: object
+            properties:
+              publication: *publication
+              score: {type: number}
+              contributions:
+                type: object
+                additionalProperties: {type: number}
+            required: [publication, score, contributions]
+            additionalProperties: false
+      required: [top]
+      additionalProperties: false
+  - name: top
+    summary: Top posts of the verified caller's channels by views, freshness and keywords.
+    operation: {method: GET, path: /top}
+    input: {type: object, properties: {}, additionalProperties: false}
+    output:
+      type: array
+      items:
+        type: object
+        properties:
+          channel: {type: string}
+          date: {type: string}
+          text: {type: string}
+          url: {type: string}
+          views: {type: string}
+          score: {type: number}
+        required: [channel, date, text, url, views, score]
+    errors: [not_configured, try_later]
+default_binding: codegen_kit_ranking:bindings/default.yaml

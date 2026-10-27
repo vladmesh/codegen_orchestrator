@@ -407,7 +407,12 @@ released component tag. Every payload it plans names the catalog it was planned 
 (`CatalogInstall.catalog`: repository, full commit, raw SHA256); a read at a moving ref
 plans nothing (`catalog_unpinned`). Unavailable or invalid catalogs, unknown/incompatible
 packages, missing recommendations/resources and binding dependency failures are named
-refusals with no install task. The released reminders closure is reminders `0.5.0`,
+refusals with no install task. `create_install_task`, the one creation point of every
+Architect INSTALL, refuses a release whose manifest `requires` an interface no earlier
+closure provides (`provider_missing: <name> requires <interface> (provided by <names>)`): a
+provider is a closure planned earlier in this story's chain, or a `done` INSTALL task of the
+product, and it provides what the activated snapshot's manifest of that same release declares.
+The Architect plans a stored capability plan's modules providers first. The released reminders closure is reminders `0.5.0`,
 recommended textparse `0.1.0`, and its default binding requiring `textparse.when`; the
 executor rechecks it against the payload's catalog commit. API admission refuses a stored
 payload without one (`catalog_unpinned`) before any operation exists.

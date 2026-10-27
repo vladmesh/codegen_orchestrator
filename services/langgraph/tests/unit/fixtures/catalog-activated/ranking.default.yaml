@@ -1,0 +1,23 @@
+binding_version: 2
+package: ranking
+language: {key: language, scope: product, values: [ru, en]}
+commands:
+  - kind: show
+    command: top
+    help: {ru: Лучшие публикации ваших каналов., en: Top posts from your channels.}
+    action: ranking.top
+    args: {}
+    reply_each:
+      parts:
+        - {ru: '@', en: '@'}
+        - {source: $item.channel}
+        - {ru: "\n", en: "\n"}
+        - {source: $item.date}
+        - {ru: "\nПросмотры: ", en: "\nViews: "}
+        - {source: $item.views}
+        - {ru: "\n", en: "\n"}
+        - {source: $item.text}
+        - {ru: "\n", en: "\n"}
+        - {source: $item.url}
+    on_none: {ru: Пока нет публикаций для рейтинга., en: No posts to rank yet.}
+events: []

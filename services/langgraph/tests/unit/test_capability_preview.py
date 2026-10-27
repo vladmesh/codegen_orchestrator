@@ -1,9 +1,9 @@
 """The Architect's capability preview over the activated catalog, from genuine bytes.
 
 `resolve_preview` is pure: the catalog (`activated_kit_catalog`, the activated commit's
-catalog and the published tg-channels 0.1.2 / reminders 0.5.0 resources), the project's
-shape and the rollout decision go in, and a preview the API stores comes out, or a typed
-refusal. Nothing here mocks the resolver, the kit loaders or the closure selection.
+catalog and the published tg-channels 0.2.0 / ranking 0.1.0 / reminders 0.5.0 resources), the
+project's shape and the rollout decision go in, and a preview the API stores comes out, or a
+typed refusal. Nothing here mocks the resolver, the kit loaders or the closure selection.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ pytestmark = pytest.mark.cpu_heavy
 PROJECT = uuid.UUID("7e1b5b1e-2a51-4e0e-9a59-16b39c6c3f01")
 CHANNELS = capability_id("tg-channels")
 REMINDERS = capability_id("reminders")
+RANKING = capability_id("ranking")
 BOT = {"backend", "tg_bot"}
 
 
@@ -60,12 +61,14 @@ CHANNEL_REQUEST = {"request_id": "channels", "capability_id": CHANNELS, "wording
 def test_offers_are_user_level_capabilities_with_opaque_ids(activated_kit_catalog):
     offers = capability_offers(activated_kit_catalog)
 
-    assert [offer.capability_id for offer in offers] == [REMINDERS, CHANNELS]
-    channels = offers[1]
+    assert [offer.capability_id for offer in offers] == [REMINDERS, CHANNELS, RANKING]
+    channels, ranking = offers[1:]
     assert "read public Telegram channels" in channels.phrases
     assert "читать публичные Telegram-каналы" in channels.phrases
+    assert "show top posts by views" in ranking.phrases
+    assert "лучшие публикации по просмотрам" in ranking.phrases
     rendered = " ".join(offer.model_dump_json() for offer in offers)
-    for technical in ("tg-channels", "0.1.2", "0.5.0", "packages/", "codegen-kit", "textparse"):
+    for technical in ("tg-channels", "0.2.0", "0.5.0", "packages/", "codegen-kit", "textparse"):
         assert technical not in rendered
 
 
@@ -78,8 +81,8 @@ def test_a_public_channel_capability_resolves_to_the_published_closure(activated
     install = module.install
     assert (install.package.name, install.package.version, install.package.tag) == (
         "tg-channels",
-        "0.1.2",
-        "packages/tg-channels/v0.1.2",
+        "0.2.0",
+        "packages/tg-channels/v0.2.0",
     )
     assert install.libraries == []
     assert install.binding.resource == "codegen_kit_tg_channels:bindings/default.yaml"
@@ -136,7 +139,7 @@ def test_the_product_projection_carries_no_technical_fact(activated_kit_catalog)
         "tg-channels",
         "tg_channels",
         "codegen",
-        "0.1.2",
+        "0.2.0",
         "0.5.0",
         "textparse",
         "packages/",

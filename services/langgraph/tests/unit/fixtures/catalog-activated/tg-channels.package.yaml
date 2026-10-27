@@ -1,8 +1,8 @@
 protocol_version: 1
 name: tg-channels
-version: 0.1.2
+version: 0.2.0
 requires_core: ">=2.4,<3"
-provides: []
+provides: [tg-channels.posts.v1]
 requires: []
 package_dependencies: [alembic, fastapi, faststream, httpx, pydantic, redis, sqlalchemy]
 http:
@@ -132,5 +132,9 @@ actions:
           date: {type: string}
           text: {type: string}
           url: {type: string}
-        required: [channel, date, text, url]
+          views:
+            anyOf:
+              - {type: integer}
+              - {type: 'null'}
+        required: [channel, date, text, url, views]
 default_binding: codegen_kit_tg_channels:bindings/default.yaml
