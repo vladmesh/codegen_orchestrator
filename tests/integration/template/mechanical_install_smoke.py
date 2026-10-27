@@ -262,21 +262,21 @@ def product_state(product, tracked):
 
 
 def state_changes(before, after):
-    changed = sorted(key for key in before if key != "trees" and before[key] != after[key])
+    changed = sorted(key for key in before if key != "tree" and before[key] != after[key])
     changed += sorted(
         f"{name}:{entry}"
-        for name, tree in before["trees"].items()
-        for entry in set(tree) | set(after["trees"][name])
-        if tree.get(entry) != after["trees"][name].get(entry)
+        for name, tree in before["tree"].items()
+        for entry in set(tree) | set(after["tree"][name])
+        if tree.get(entry) != after["tree"][name].get(entry)
     )
     return changed
 
 
 def byte_evidence(before, after, changed):
     return {
-        "before": {k: tree_evidence(v) for k, v in before["trees"].items()},
-        "after": {k: tree_evidence(v) for k, v in after["trees"].items()},
-        "locks": after["locks"],
+        "before": {k: tree_evidence(v) for k, v in before["tree"].items()},
+        "after": {k: tree_evidence(v) for k, v in after["tree"].items()},
+        "locks": after["lock"],
         "protected_sha256": hashlib.sha256(
             json.dumps(after["protected"], sort_keys=True).encode()
         ).hexdigest(),
@@ -299,7 +299,7 @@ def prove_source_preflight(product, payload, answers):
 
     kit_env = install.product_environment(product) | install.NO_BYTECODE
     answers["cache_policy"] = SOURCE_PREFLIGHT_CACHE_POLICY
-    answers["compared"] = ["git_status", "ignored", "locks", "protected", "source"]
+    answers["compared"] = ["git_status", "ignored", "lock", "protected", "source"]
     answers["compared"] += list(install.PRODUCT_ENVIRONMENTS)
     try:
         for label, version in (("admitted", "1.0.0"), ("version_mismatch", "1.0.1")):
