@@ -130,8 +130,14 @@ _RECHECKABLE_BLOCKERS = frozenset(
         # Every failed check lacked a QA tool or QA access. Once an operator
         # has granted the access or accepted the gap, exactly this recheck runs.
         QABlockerCategory.QA_CHECKS_UNVERIFIABLE,
+        # The executor's result broke the result contract; QA never judged the
+        # deployment, so the recheck asks a new executor on the same built commit.
+        QABlockerCategory.QA_RESULT_INVALID,
     }
 )
+#: The one `unknown` blocker a recheck accepts: an untyped invalid executor result,
+#: matched by this exact attempted value and nothing broader.
+_UNTYPED_INVALID_RESULT_ATTEMPT = "validate QA agent result"
 _COMMIT_SHA_LENGTHS = frozenset({40, 64})
 
 
@@ -719,7 +725,11 @@ async def _recheck_target(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="recheck-qa requires a typed QA blocker",
         ) from exc
-    if blocker.category not in _RECHECKABLE_BLOCKERS:
+    untyped_invalid_result = (
+        blocker.category is QABlockerCategory.UNKNOWN
+        and blocker.attempted == _UNTYPED_INVALID_RESULT_ATTEMPT
+    )
+    if blocker.category not in _RECHECKABLE_BLOCKERS and not untyped_invalid_result:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"QA blocker '{blocker.category.value}' cannot be cleared by recheck",

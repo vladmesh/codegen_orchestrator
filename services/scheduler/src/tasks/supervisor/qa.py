@@ -25,6 +25,7 @@ from shared.contracts.dto.run_result import (
     QARunResult,
 )
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story_failure import bounded_diagnostic
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.vocab import OwnerNotificationEvent
@@ -52,6 +53,9 @@ MAX_QA_LOOPS = 2  # max QA→Engineering cycles before story is marked failed
 #: The QA outcomes that are a verdict on the product. The owner event a story
 #: ends on after one carries what that run checked and could not.
 _PRODUCT_VERDICTS = frozenset({QAOutcome.FAILED, QAOutcome.EXHAUSTED})
+#: The most of a blocker's `received` an administrator notice quotes; the Run keeps it whole,
+#: and one Telegram message must hold the notice.
+_ADMIN_RECEIVED_LIMIT = 1500
 
 
 def _qa_failure_limit() -> int:
@@ -327,7 +331,7 @@ async def _quarantine_unverified_application(
             f"run: {run.id}\n"
             f"attempted: {harness.attempted}\n"
             f"sent: {harness.sent}\n"
-            f"received: {harness.received}\n"
+            f"received: {bounded_diagnostic(harness.received, limit=_ADMIN_RECEIVED_LIMIT)}\n"
             f"No fix task was created. {_harness_repair(harness.category, story_id)}",
             level="error",
             component="supervisor",
@@ -353,6 +357,8 @@ def _harness_repair(category: QABlockerCategory, story_id: str) -> str:
         # Only a product refusing the QA identity is typed this way; a recheck
         # helps once that access has been repaired.
         return f"A qa_access check needs the refused access repaired first; only then {recheck}."
+    if category is QABlockerCategory.QA_RESULT_INVALID:
+        return f"The QA executor's result broke the result contract; {recheck} reruns QA."
     return f"Repair the target (managed-target reconciliation), then {recheck}."
 
 

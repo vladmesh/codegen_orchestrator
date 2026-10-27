@@ -2341,6 +2341,49 @@ class TestSuperviseTestingStories:
         assert "/api/stories/story-1/recheck-qa" in message
         assert api_client.update_story.await_args.args[1]["quarantine_reason"]["blocker"] == blocker
 
+    @pytest.mark.asyncio
+    async def test_an_invalid_qa_result_parks_with_a_notice_that_fits_one_message(
+        self, api_client, redis_client
+    ):
+        """The Run keeps the whole invalid answer; the notice quotes a bounded head of it."""
+        from unittest.mock import AsyncMock, patch
+
+        from shared.notifications import ADMIN_MESSAGE_BODY_LIMIT
+        from src.tasks.supervisor import supervise_testing_stories
+        from src.tasks.supervisor.qa import _quarantine_text
+
+        blocker = {
+            "category": "qa_result_invalid",
+            "attempted": "validate QA agent result",
+            "sent": "QA agent final message",
+            "received": "unexpected top-level keys: report\n\nQA agent answer:\n" + "x" * 65536,
+        }
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            run_metadata={"application_id": 42},
+            result={"qa_outcome": QAOutcome.BLOCKED.value, "blocker": blocker},
+        )
+        api_client.get_project.return_value = SimpleNamespace(owner_id=100713)
+
+        with patch(
+            "src.tasks.supervisor.qa.notify_admins_best_effort", new_callable=AsyncMock
+        ) as admins:
+            await supervise_testing_stories(api_client, redis_client)
+
+        api_client.create_task.assert_not_called()
+        reason = api_client.update_story.await_args.args[1]["quarantine_reason"]
+        assert reason["blocker"] == blocker
+        assert "not in the product" in _quarantine_text(reason)
+        message = admins.await_args.args[0]
+        assert len(message) <= ADMIN_MESSAGE_BODY_LIMIT
+        assert "unexpected top-level keys: report" in message
+        assert "/api/stories/story-1/recheck-qa reruns QA" in message
+        assert "managed-target reconciliation" not in message
+
     def test_a_harness_blocker_is_never_worded_to_the_owner_as_a_product_problem(self):
         from src.tasks.supervisor.qa import _quarantine_text
 

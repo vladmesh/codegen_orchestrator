@@ -12,6 +12,7 @@ import respx
 from shared.contracts.acceptance import HealthCriterion
 from shared.contracts.dto.run_result import QABlockerCategory
 from src.consumers._qa_runner import (
+    QA_INVALID_ANSWER_MAX_CHARS,
     parse_qa_result,
     run_health_checks,
     settle_unverified_checks,
@@ -287,7 +288,7 @@ class TestParseQAResult:
         assert result.passed is False
         assert result.checks == []
         assert result.blocker is not None
-        assert result.blocker.category == QABlockerCategory.UNKNOWN
+        assert result.blocker.category == QABlockerCategory.QA_RESULT_INVALID
 
     @pytest.mark.parametrize("executor_pass", [True, False])
     def test_a_verdict_whose_only_failures_qa_could_not_run_is_accepted(self, executor_pass):
@@ -332,7 +333,7 @@ class TestParseQAResult:
         assert result.passed is False
         assert result.checks == []
         assert result.blocker is not None
-        assert result.blocker.category == QABlockerCategory.UNKNOWN
+        assert result.blocker.category == QABlockerCategory.QA_RESULT_INVALID
 
     def test_prompt_ties_the_top_level_pass_to_every_check(self):
         prompt = build_qa_prompt(
@@ -359,13 +360,13 @@ class TestParseQAResult:
         assert result.passed is False
         assert result.checks == []
         assert result.blocker is not None
-        assert result.blocker.category == QABlockerCategory.UNKNOWN
+        assert result.blocker.category == QABlockerCategory.QA_RESULT_INVALID
 
     def test_malformed_json(self):
         result = parse_qa_result("not json at all")
         assert result.passed is False
         assert result.blocker is not None
-        assert result.blocker.category == QABlockerCategory.UNKNOWN
+        assert result.blocker.category == QABlockerCategory.QA_RESULT_INVALID
 
     def test_json_embedded_in_text(self):
         """Claude sometimes wraps JSON in markdown code blocks."""
@@ -382,7 +383,7 @@ class TestParseQAResult:
         result = parse_qa_result(raw)
         assert result.passed is False
         assert result.blocker is not None
-        assert result.blocker.category == QABlockerCategory.UNKNOWN
+        assert result.blocker.category == QABlockerCategory.QA_RESULT_INVALID
 
     @pytest.mark.parametrize(
         "raw",
@@ -391,12 +392,40 @@ class TestParseQAResult:
             '{"pass": true, "checks": "claimed all good", "summary": "bad"}',
         ],
     )
-    def test_structurally_invalid_result_is_unknown_blocker(self, raw):
+    def test_structurally_invalid_result_is_an_invalid_result_blocker(self, raw):
         result = parse_qa_result(raw)
 
         assert result.passed is False
         assert result.blocker is not None
-        assert result.blocker.category == QABlockerCategory.UNKNOWN
+        assert result.blocker.category == QABlockerCategory.QA_RESULT_INVALID
+
+    def test_an_invalid_answer_names_its_keys_and_is_kept_whole(self):
+        bot_url = "https://api.telegram.org/bot123456:AAFakeBotToken/getMe"
+        checks = [{"name": f"check {i}", "pass": True, "detail": "ok " * 20} for i in range(40)]
+        raw = json.dumps({"pass": True, "checks": checks, "report": f"read {bot_url}"})
+
+        result = parse_qa_result(raw)
+
+        assert result.blocker.category == QABlockerCategory.QA_RESULT_INVALID
+        reason = "unexpected top-level keys: report; missing top-level keys: summary"
+        assert reason in result.summary
+        assert reason in result.blocker.received
+        assert "AAFakeBotToken" not in result.blocker.received
+        assert raw.replace(bot_url, "https://api.telegram.org/bot[redacted]/getMe") in (
+            result.blocker.received
+        )
+
+    def test_an_invalid_answer_beyond_the_bound_keeps_its_head_and_a_marker(self):
+        raw = json.dumps({"pass": True, "checks": [], "notes": "x" * QA_INVALID_ANSWER_MAX_CHARS})
+
+        result = parse_qa_result(raw)
+
+        received = result.blocker.received
+        assert raw[:QA_INVALID_ANSWER_MAX_CHARS] in received
+        assert raw not in received
+        assert received.endswith(
+            f"[truncated: {len(raw) - QA_INVALID_ANSWER_MAX_CHARS} more characters]"
+        )
 
     def test_empty_output(self):
         result = parse_qa_result("")
@@ -429,7 +458,7 @@ class TestParseQAResult:
         result = parse_qa_result(wrapper)
         assert result.passed is False
         assert result.blocker is not None
-        assert result.blocker.category == QABlockerCategory.UNKNOWN
+        assert result.blocker.category == QABlockerCategory.QA_RESULT_INVALID
 
 
 class TestRunHealthChecks:

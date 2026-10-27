@@ -16,12 +16,15 @@ from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
 from shared.qa_probe_cli import CAPABILITIES_CALL, SUBMIT_VERDICT_CALL, TELEGRAM_IDENTITY_CALL
 
 from ...consumers._qa_redaction import ENDPOINT_TOKEN, QARunRedaction
+from ...consumers._qa_result_shape import QAResultInvalid, decode_qa_result
 
 logger = structlog.get_logger(__name__)
 
 CALL_PATH = "/qa/call"
 MAX_VERDICT_CHARS = 100_000
 MAX_REQUEST_BODY = 256 * 1024
+#: Invalid results the endpoint refuses; the next invalid one ends the run as it is.
+MAX_RESULT_REFUSALS = 3
 
 
 @dataclass(frozen=True)
@@ -76,6 +79,7 @@ class QACapabilityService:
         self.verdict_received = asyncio.Event()
         # Distinguishes an executor failure from a run with no verdict.
         self.calls_served = 0
+        self.results_refused = 0
 
     @property
     def token(self) -> str:
@@ -226,6 +230,22 @@ class QACapabilityService:
                 f"the result must be under {MAX_VERDICT_CHARS} characters; "
                 "the report belongs in `qa report`"
             )
+        try:
+            decode_qa_result(raw)
+        except QAResultInvalid as exc:
+            if self.results_refused < MAX_RESULT_REFUSALS:
+                self.results_refused += 1
+                logger.info(
+                    "qa_capability_result_refused",
+                    reason=str(exc),
+                    refusals=self.results_refused,
+                )
+                raise QACapabilityRejected(
+                    f"the result was refused and the run goes on: {exc}. Correct the file and "
+                    f"call `finish` again; {MAX_RESULT_REFUSALS - self.results_refused} more "
+                    "invalid result(s) are refused before one ends the run as invalid"
+                ) from exc
+            logger.warning("qa_capability_invalid_result_kept", reason=str(exc))
         self._submit_verdict(raw)
         self.verdict_received.set()
         logger.info("qa_capability_verdict_received", chars=len(raw))

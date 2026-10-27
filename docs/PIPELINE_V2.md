@@ -547,7 +547,7 @@ pass as an ordinary schema error.
 7. Telegram bots are tested by the runtime, which sends the agent's message as the QA account and returns the replies. The agent never holds the session
 7a. A checklist line of the form `- FIRE JOB <name> [WITH {json}] THEN <observable>` names a scheduled behaviour of the product. The runner parses those lines itself, before any executor exists, resolves this deployment's `JOBS_FIRE_CAPABILITY` from the project's own encrypted secrets on the management host, and offers two extra calls bound to that closed set of names: `fire_job(name)` invokes the behaviour through the product's released `POST /jobs/fire`, and `job_evidence(name)` reads the record back through `POST /jobs/evidence`. The executor supplies the name and nothing else — the arguments come off the criterion, the command identity is `qa-<qa run id>-<name>` and the provenance is this QA run, so a retry of the call re-reads one execution rather than causing a second. The capability travels as the `X-Jobs-Capability` header from the management host and never enters the executor container, its environment, the `qa` CLI's arguments, the trace or a verdict. A `dispatched` command records only that the product's core published `job_fired`; the prompt, the answer and the run's facts all say that this is not evidence the behaviour ran, and the check passes on the observable the criterion states
 7b. For a brief-backed story the run is also given the confirmed `initial_settings` — key, scope and value — read through `GET /api/product-briefs/by-story/{story_id}`. An acceptance step about a configured behaviour asserts against those typed values instead of reconstructing them from the story's prose. A story with no confirmed brief adds nothing and the run is exactly as it was
-8. The agent submits a structured terminal verdict through the capability endpoint.
+8. The agent submits a structured terminal verdict through the capability endpoint, which refuses an invalid shape by name a bounded number of times before keeping it as a `qa_result_invalid` blocker (`docs/contracts/managed-target-readiness.md`).
 9. Workspace and target grant are destroyed on every path out, including a failed or interrupted run; anything that survives is reported as a `qa_cleanup_failed` blocker. A grant the run could not settle stays on the record for the `qa-worker` sweep
 10. Write `QAOutcome` to `run.result` (PASSED / FAILED / EXHAUSTED / ERROR)
 11. QA consumer does NOT transition stories or create tasks — it is a pure technical worker
@@ -560,7 +560,8 @@ pass as an ordinary schema error.
 - ERROR → story `failed`
 - BLOCKED → application stopped, story `waiting_human_review`, no fix task and no engineering
   iteration. A QA harness blocker (`QA_HARNESS_BLOCKERS`: stale `qa-docker`, refused verb,
-  unavailable probe, SSH/runtime failure, an executor that never reached the capability endpoint)
+  unavailable probe, SSH/runtime failure, an executor that never reached the capability endpoint,
+  an executor result that broke the result contract)
   also notifies administrators with the `recheck-qa` route, and the owner is told the platform's
   test environment failed, not the product
 
