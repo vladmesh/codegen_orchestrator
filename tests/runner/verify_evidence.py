@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 import yaml
@@ -201,6 +202,40 @@ def stand_witness_problems(evidence: dict, packages: list[str]) -> list[str]:
     return problems
 
 
+def kit_identity_problems(evidence: dict, activation: dict, kit_dir: Path) -> list[str]:
+    """Why the evidence did not run the activated tooling over the activated catalog.
+
+    The harness and the catalog are the activation's `commit`; the template render, the planner
+    and the product's installed tooling are its `tooling_commit`, which `commit` descends from on
+    kit main, so the catalog never predates the tooling that reads it.
+    """
+    catalog, tooling = activation["commit"], activation["tooling_commit"]
+    problems = []
+    if evidence["pinned"]["kit"] != catalog:
+        problems.append(f"the harness ran kit {evidence['pinned']['kit']}, not {catalog}")
+    revisions = evidence["revisions"]
+    for what, found in (
+        ("template render", evidence["template"]["resolved_sha"]),
+        ("planner tooling", revisions["planner_tooling"]["vcs_info"]["commit_id"]),
+        ("product tooling", revisions["product_tooling"]["vcs_info"]["commit_id"]),
+    ):
+        if found != tooling:
+            problems.append(f"the {what} is {found}, not the tooling commit {tooling}")
+    for ancestor, descendant in ((tooling, catalog), (catalog, "refs/remotes/origin/main")):
+        ancestry = subprocess.run(
+            ["git", "-C", str(kit_dir), "merge-base", "--is-ancestor", ancestor, descendant],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if ancestry.returncode != 0:
+            problems.append(
+                f"{descendant} does not descend from {ancestor} in the kit history: "
+                f"{ancestry.stderr.strip() or ancestry.returncode}"
+            )
+    return problems
+
+
 def verify(evidence: dict, args: argparse.Namespace, activation: dict, support) -> dict:  # noqa: C901, PLR0912, PLR0915 - one ordered evidence contract
     pinned = {
         "kit": args.kit_sha,
@@ -210,9 +245,8 @@ def verify(evidence: dict, args: argparse.Namespace, activation: dict, support) 
     packages = args.packages.split(",")
     assert evidence["status"] == "passed", evidence.get("error")
     assert evidence["pinned"] == pinned, evidence["pinned"]
-    assert pinned["kit"] == activation["commit"] == activation["tooling_commit"], activation
-    assert evidence["revisions"]["product_tooling"]["vcs_info"]["commit_id"] == pinned["kit"]
-    assert evidence["template"]["resolved_sha"] == pinned["kit"]
+    identity = kit_identity_problems(evidence, activation, args.kit_dir)
+    assert not identity, identity
     for key in (
         "install",
         "release",

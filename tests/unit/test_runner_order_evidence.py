@@ -1,9 +1,14 @@
 """The runner verifier refuses order evidence the native lifecycle did not produce."""
 
 import copy
+from pathlib import Path
+import subprocess
+
+import pytest
 
 from tests.runner.verify_evidence import (
     conflict_problems,
+    kit_identity_problems,
     lifecycle_problems,
     seed_causality_problems,
 )
@@ -188,3 +193,60 @@ def test_an_opaque_or_unrepaired_conflict_is_refused():
     assert conflict_problems(lifecycle(), PRODUCTION, ["tg-channels"]) == [
         "no conflict handoff for tg-channels"
     ]
+
+
+@pytest.fixture
+def kit_history(tmp_path: Path) -> tuple[Path, str, str]:
+    """A kit repository whose main holds a tooling commit and a later catalog commit."""
+
+    def git(*argv: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t", *argv],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    git("init", "-q")
+    git("commit", "-q", "--allow-empty", "-m", "tooling release")
+    tooling = git("rev-parse", "HEAD")
+    git("commit", "-q", "--allow-empty", "-m", "catalog lists a new release")
+    catalog = git("rev-parse", "HEAD")
+    git("update-ref", "refs/remotes/origin/main", catalog)
+    return tmp_path, tooling, catalog
+
+
+def identity_evidence(harness: str, template: str, planner: str, product: str) -> dict:
+    return {
+        "pinned": {"kit": harness},
+        "template": {"resolved_sha": template},
+        "revisions": {
+            "planner_tooling": {"vcs_info": {"commit_id": planner}},
+            "product_tooling": {"vcs_info": {"commit_id": product}},
+        },
+    }
+
+
+@pytest.mark.subprocess
+def test_the_tooling_release_over_a_later_catalog_commit_passes(kit_history):
+    kit, tooling, catalog = kit_history
+    activation = {"commit": catalog, "tooling_commit": tooling}
+    evidence = identity_evidence(catalog, tooling, tooling, tooling)
+
+    assert kit_identity_problems(evidence, activation, kit) == []
+
+
+@pytest.mark.subprocess
+def test_a_render_off_the_tooling_or_a_catalog_older_than_its_tooling_is_refused(kit_history):
+    kit, tooling, catalog = kit_history
+    activation = {"commit": catalog, "tooling_commit": tooling}
+    rendered_at_catalog = identity_evidence(catalog, catalog, tooling, tooling)
+    predating = {"commit": tooling, "tooling_commit": catalog}
+
+    assert kit_identity_problems(rendered_at_catalog, activation, kit) == [
+        f"the template render is {catalog}, not the tooling commit {tooling}"
+    ]
+    [problem] = kit_identity_problems(
+        identity_evidence(tooling, catalog, catalog, catalog), predating, kit
+    )
+    assert problem.startswith(f"{tooling} does not descend from {catalog}")

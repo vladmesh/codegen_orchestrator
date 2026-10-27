@@ -142,6 +142,9 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
     activation = yaml.safe_load(
         (args.orchestrator_dir / "shared/catalog_activation.yaml").read_text()
     )
+    # The harness and the catalog are the activated `commit` (`self.sha`); the planner, the
+    # template render and every payload run the kit tooling release `tooling_commit`.
+    tooling = activation["tooling_commit"]
     sys.path.insert(1, str(args.orchestrator_dir.resolve()))
     from scripts.template_pin import load_template_pin  # noqa: PLC0415 - the checkout's seed reader
 
@@ -234,6 +237,41 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
                     f"{label} exited {result.returncode}; see {log.name}"
                 )
             return result
+
+        def revisions(self) -> None:
+            """The harness's pinned checkout heads, with the planner on the activated tooling."""
+            pinned = self.evidence["pinned"]
+            for name, path in (
+                ("kit", self.kit),
+                ("orchestrator", self.orchestrator),
+                ("platform", self.platform),
+            ):
+                head = self.git("rev-parse", "HEAD", cwd=path, label=f"{name} checkout head")
+                if head != pinned[name]:
+                    raise fresh_product.ProofError(
+                        f"{name} checkout is {head}, expected pinned {pinned[name]}"
+                    )
+            provenance = json.loads(
+                self.run(
+                    [sys.executable, "-I", "-c", fresh_product.TOOLING_PROVENANCE],
+                    cwd=self.work,
+                    label="planner tooling provenance",
+                ).stdout
+            )
+            if (
+                provenance["url"] != fresh_product.KIT_REPOSITORY
+                or provenance["vcs_info"]["commit_id"] != tooling
+            ):
+                raise fresh_product.ProofError(
+                    "the orchestrator planner must run the activated kit tooling"
+                )
+            self.evidence["revisions"] = {
+                "kit": self.sha,
+                "tooling": tooling,
+                "orchestrator": pinned["orchestrator"],
+                "platform": pinned["platform"],
+                "planner_tooling": provenance,
+            }
 
         def prove(self) -> None:
             with self.timeline.span("stage", "prove"):
@@ -615,15 +653,15 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
             asyncio.run(walk())
 
         def template_evidence(self, product: Path) -> None:
-            """The same checks the harness's own scaffold makes of its Copier render."""
+            """The harness's checks of its Copier render, against the activated tooling commit."""
             answers = yaml.safe_load((product / ".copier-answers.yml").read_text())
             resolved = self.git(
                 "rev-parse", f"{answers['_commit']}^{{commit}}", cwd=self.kit, label="template"
             )
             dependencies = (product / "pyproject.toml").read_text()
-            if resolved != self.sha or f"codegen-product-kit.git@{self.sha}" not in dependencies:
+            if resolved != tooling or f"codegen-product-kit.git@{tooling}" not in dependencies:
                 raise fresh_product.ProofError(
-                    "Copier answers or tooling requirement do not name the candidate"
+                    "Copier answers or tooling requirement do not name the activated tooling"
                 )
             self.evidence["template"] = {
                 "source": answers["_src_path"],
@@ -631,7 +669,7 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
                 "resolved_sha": resolved,
                 "modules": answers["modules"],
                 "tooling_requirement": (
-                    f"codegen-kit-tooling @ git+{fresh_product.KIT_REPOSITORY}@{self.sha}"
+                    f"codegen-kit-tooling @ git+{fresh_product.KIT_REPOSITORY}@{tooling}"
                 ),
                 "scaffolded_by": "scaffolder.src.consumer.process_scaffold_job (mode full)",
             }
@@ -1142,7 +1180,7 @@ def build_runner(args: argparse.Namespace):  # noqa: C901, PLR0915 - one subclas
 
         def select_payload(self, name: str) -> dict:
             payload = self.production["install_tasks"][name]["install"]
-            if payload["tooling_commit"] != self.sha or payload["package"]["name"] != name:
+            if payload["tooling_commit"] != tooling or payload["package"]["name"] != name:
                 raise fresh_product.ProofError("persisted payload names another tooling/package")
             if payload["catalog"]["commit"] != activation["commit"]:
                 raise fresh_product.ProofError("persisted payload names another catalog commit")

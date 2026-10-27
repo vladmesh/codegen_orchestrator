@@ -434,7 +434,8 @@ merge commit runs to its gate and gets its service and worker release.
 
 `runner-proof` (legs `fresh`: tg-channels; `coexistence`: reminders then tg-channels) runs on every
 pull request and every main push, with no path filter, and `merge-gate` fails a skipped leg. It reuses
-the kit's harness at the activated kit commit (`tests/runner/fresh_product.py` there): the
+the kit's harness at the activated catalog `commit` (`tests/runner/fresh_product.py` there), with the
+product template, the planner and the installed tooling at the activation's `tooling_commit`: the
 orchestrator's real install executor, product CI and drift, the cold environment regression, pushed
 and run image digests, the pinned platform's real auth and Caddy with key negatives, the fixture
 reader, timer post delivery, the coexistence reminder and the RU/EN causal probes. The narrow adapter
@@ -465,7 +466,8 @@ then sees the bot answer in the saved language and start with the saved channels
 own API confirms and removes that list) before the harness writes any setting or subscribes
 anybody; then QA's check must refuse a changed channel list and an undeclared key on the deployed
 product, and a seed replay restores the confirmed values. `tests/runner/verify_evidence.py`
-requires the passed, SHA-bound evidence: the kit's published-release checks, including the
+requires the passed, SHA-bound evidence: those two kit identities, `commit` descending from
+`tooling_commit` on kit main, the kit's published-release checks, including the
 grant/revoke/grant access acknowledgment cycle, plus that every route names the capability its
 stored plan installs and that stored plan, persisted task and installed payload are one closure at
 the activated commit, the draft order and its admission wait, the native scaffold and install
