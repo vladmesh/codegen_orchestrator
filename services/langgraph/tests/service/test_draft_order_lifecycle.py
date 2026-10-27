@@ -65,10 +65,15 @@ async def test_a_draft_orders_failed_scaffold_stops_only_its_capability_story(re
         ordinary = await api.post("stories/", json={"project_id": pid, "title": "Notes"})
         for story in (capability, ordinary):
             await api.post(f"stories/{story['id']}/start")
-        payload = plan_install_payload(snapshot(), "reminders", INSTALL_PYTHON_VERSION)
+        catalog = snapshot()
+        payload = plan_install_payload(catalog, "reminders", INSTALL_PYTHON_VERSION)
         with patch("src.agents.architect.tools.api_client", api):
             install = await create_install_task(
-                payload, story_id=capability["id"], project_id=pid, planning_attempt_id=None
+                payload,
+                catalog=catalog,
+                story_id=capability["id"],
+                project_id=pid,
+                planning_attempt_id=None,
             )
         assert "error" not in install, install
         feature = await api.post(

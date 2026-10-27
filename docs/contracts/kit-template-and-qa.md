@@ -26,8 +26,13 @@ The production boundary is the annotated kit release `0.12.0` (tag object
 [release notes](https://github.com/vladmesh/codegen-product-kit/blob/8caf935feb3d099a3b79162392df2efabb95c669/docs/releases/0.12.0.md)).
 The tag and its commit are separate identities. The seed, the fixture directory name and the
 recorded `_commit` carry the tag; the root `codegen-kit-tooling` dependency, the LangGraph
-requirement, their locks, the activated catalog snapshot (`shared/catalog_activation.yaml`) and the
-capability manifest's provenance carry the full commit. The matching
+requirement, their locks, the activated catalog snapshot's `tooling_commit`
+(`shared/catalog_activation.yaml`) and the capability manifest's provenance carry the full commit.
+The snapshot's `commit` is a separate identity: the catalog bytes, the package release tags read
+from them and their bindings. It descends from `tooling_commit` on kit main, so a catalog never
+predates the tooling that reads it; the runner proof's harness runs at `commit`, while the product
+template, the planner and the installed tooling stay at `tooling_commit` (`docs/TESTING.md`,
+"Runner proof"). The matching
 `shared/tests/fixtures/codegen-product-kit-0.12.0` tree is its `backend,tg_bot` Copier render.
 The render, its [provenance](../evidence/catalog-install-fixture.json) and both locks are the CI
 producer's output (`.github/workflows/template-fixture.yml`, jobs `render` and `locks`), never
@@ -407,7 +412,12 @@ released component tag. Every payload it plans names the catalog it was planned 
 (`CatalogInstall.catalog`: repository, full commit, raw SHA256); a read at a moving ref
 plans nothing (`catalog_unpinned`). Unavailable or invalid catalogs, unknown/incompatible
 packages, missing recommendations/resources and binding dependency failures are named
-refusals with no install task. The released reminders closure is reminders `0.5.0`,
+refusals with no install task. `create_install_task`, the one creation point of every
+Architect INSTALL, refuses a release whose manifest `requires` an interface no earlier
+closure provides (`provider_missing: <name> requires <interface> (provided by <names>)`): a
+provider is a closure planned earlier in this story's chain, or a `done` INSTALL task of the
+product, and it provides what the activated snapshot's manifest of that same release declares.
+The Architect plans a stored capability plan's modules providers first. The released reminders closure is reminders `0.5.0`,
 recommended textparse `0.1.0`, and its default binding requiring `textparse.when`; the
 executor rechecks it against the payload's catalog commit. API admission refuses a stored
 payload without one (`catalog_unpinned`) before any operation exists.

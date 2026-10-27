@@ -353,11 +353,16 @@ packages:
               type: string
             url:
               type: string
+            views:
+              anyOf:
+              - type: integer
+              - type: 'null'
           required:
           - channel
           - date
           - text
           - url
+          - views
     default_binding: codegen_kit_tg_channels:bindings/default.yaml
     versions:
     - version: 0.1.0
@@ -368,4 +373,193 @@ packages:
       requires_core: '>=2.4,<3'
     - version: 0.1.2
       tag: packages/tg-channels/v0.1.2
+      requires_core: '>=2.4,<3'
+    - version: 0.2.0
+      tag: packages/tg-channels/v0.2.0
+      requires_core: '>=2.4,<3'
+  - name: ranking
+    distribution: codegen-kit-ranking
+    path: packages/codegen-kit-ranking
+    summary: Deterministic ranking of the caller's tg-channels posts by views, freshness and keywords,
+      with /top in RU and EN.
+    capabilities:
+    - рейтинг публикаций каналов
+    - лучшие публикации по просмотрам
+    - rank channel posts
+    - show top posts by views
+    - rank posts by views, freshness and keywords
+    settings:
+    - name: weights
+      summary: Weight in percent of views, reactions, forwards, freshness and keywords; product scope,
+        populated through setting seeds with the declared default.
+    - name: keywords
+      summary: Up to 50 keywords matched literally while the keywords weight is non-zero; product scope,
+        populated through setting seeds with the declared default.
+    - name: top_count
+      summary: Number of posts top returns, 1 to 50; product scope, populated through setting seeds with
+        the declared default.
+    environment: []
+    actions:
+    - name: rank
+      summary: Rank the supplied publications under the supplied weights and keywords.
+      operation:
+        method: POST
+        path: /rank
+      input:
+        type: object
+        properties:
+          publications:
+            type: array
+            maxItems: 1000
+            items: &id103
+              type: object
+              properties:
+                id:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                date:
+                  type: string
+                  format: date-time
+                channel:
+                  anyOf:
+                  - type: string
+                    maxLength: 64
+                  - type: 'null'
+                url:
+                  anyOf:
+                  - type: string
+                    maxLength: 2048
+                  - type: 'null'
+                text:
+                  anyOf:
+                  - type: string
+                    maxLength: 10000
+                  - type: 'null'
+                views: &id101
+                  anyOf:
+                  - type: integer
+                    minimum: 0
+                    maximum: 1000000000000
+                  - type: 'null'
+                reactions: *id101
+                forwards: *id101
+              required:
+              - id
+              - date
+              additionalProperties: false
+          settings:
+            type: object
+            properties:
+              weights:
+                type: object
+                properties:
+                  views: &id102
+                    type: number
+                    minimum: 0
+                    maximum: 100
+                  reactions: *id102
+                  forwards: *id102
+                  freshness: *id102
+                  keywords: *id102
+                required:
+                - views
+                - reactions
+                - forwards
+                - freshness
+                - keywords
+                additionalProperties: false
+              keywords:
+                type: array
+                maxItems: 50
+                items:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                default: []
+            required:
+            - weights
+            additionalProperties: false
+          limit:
+            anyOf:
+            - type: integer
+              minimum: 1
+            - type: 'null'
+          now:
+            anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          freshness_half_life_hours:
+            type: number
+            exclusiveMinimum: 0
+            maximum: 8760
+            default: 24.0
+        required:
+        - publications
+        - settings
+        additionalProperties: false
+      output:
+        type: object
+        properties:
+          top:
+            type: array
+            items:
+              type: object
+              properties:
+                publication: *id103
+                score:
+                  type: number
+                contributions:
+                  type: object
+                  additionalProperties:
+                    type: number
+              required:
+              - publication
+              - score
+              - contributions
+              additionalProperties: false
+        required:
+        - top
+        additionalProperties: false
+    - name: top
+      summary: Top posts of the verified caller's channels by views, freshness and keywords.
+      operation:
+        method: GET
+        path: /top
+      input:
+        type: object
+        properties: {}
+        additionalProperties: false
+      output:
+        type: array
+        items:
+          type: object
+          properties:
+            channel:
+              type: string
+            date:
+              type: string
+            text:
+              type: string
+            url:
+              type: string
+            views:
+              type: string
+            score:
+              type: number
+          required:
+          - channel
+          - date
+          - text
+          - url
+          - views
+          - score
+      errors:
+      - not_configured
+      - try_later
+    default_binding: codegen_kit_ranking:bindings/default.yaml
+    versions:
+    - version: 0.1.0
+      tag: packages/ranking/v0.1.0
       requires_core: '>=2.4,<3'

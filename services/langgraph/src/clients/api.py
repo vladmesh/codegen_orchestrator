@@ -43,7 +43,7 @@ from shared.contracts.dto.story_planning import (
     StoryPlanning,
     StoryPlanningReport,
 )
-from shared.contracts.dto.task import TaskDTO, TaskEventDTO
+from shared.contracts.dto.task import TaskDTO, TaskEventDTO, TaskStatus, TaskType
 from shared.contracts.dto.telegram import BotLiveness
 from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO
 from shared.contracts.dto.user import UserDTO
@@ -420,6 +420,16 @@ class LanggraphAPIClient(RunAPIClientMixin, InternalAPIClient):
 
     async def get_tasks_by_story(self, story_id: str) -> list[TaskDTO]:
         resp = await self.request("GET", "tasks/", params={"story_id": story_id})
+        return [TaskDTO.model_validate(t) for t in resp.json()]
+
+    async def get_tasks_by_project(
+        self, project_id: str, *, task_type: TaskType, status: TaskStatus
+    ) -> list[TaskDTO]:
+        resp = await self.request(
+            "GET",
+            "tasks/",
+            params={"project_id": project_id, "type": task_type.value, "status": status.value},
+        )
         return [TaskDTO.model_validate(t) for t in resp.json()]
 
     async def get_task(self, task_id: str) -> TaskDTO:

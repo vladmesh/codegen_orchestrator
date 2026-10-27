@@ -75,6 +75,7 @@ from ..catalog_install import (
     InstallRefusal,
     local_build_identity,
     plan_install_payload,
+    provider_first,
 )
 from ..catalog_product_settings import catalog_binding_settings
 from ..clients.api import api_client
@@ -1763,10 +1764,11 @@ async def _plan_capabilities(  # noqa: PLR0913 — one stored plan's whole consu
 
     The plan's closures are checked against the activated snapshot read now — the same
     commit and digests, and the same closure `plan_install_payload` resolves — before
-    any task exists, and then installed exactly as stored. Each module's requirements
-    are covered by its install task, except a `module_with_glue` route's: those stay
-    outstanding for feature tasks planned after the install, and admission refuses the
-    plan until such a task covers them. Returns `(install task per request, covering task
+    any task exists, and then installed exactly as stored, each provider before the modules
+    whose manifests require what it provides. Each module's requirements are covered by
+    its install task, except a `module_with_glue` route's: those stay outstanding for
+    feature tasks planned after the install, and admission refuses the plan until such a
+    task covers them. Returns `(install task per request, covering task
     per requirement, verified job contracts)`, or the recorded refusal.
     """
     if (catalog.commit, catalog.digest, catalog.catalog_sha256) != (
@@ -1790,11 +1792,13 @@ async def _plan_capabilities(  # noqa: PLR0913 — one stored plan's whole consu
     # One INSTALL per closure: two requests selecting the same capability share it. The
     # check above made every stored closure the one this snapshot resolves for its package.
     by_package: dict[str, str] = {}
-    for item in plan.modules:
+    order = provider_first(catalog, [item.install.package.name for item in plan.modules])
+    for item in sorted(plan.modules, key=lambda item: order.index(item.install.package.name)):
         task_id = by_package.get(item.install.package.name)
         if task_id is None:
             result = await create_install_task(
                 item.install,
+                catalog=catalog,
                 story_id=msg.story_id,
                 project_id=msg.project_id,
                 planning_attempt_id=planning.planning_attempt_id,

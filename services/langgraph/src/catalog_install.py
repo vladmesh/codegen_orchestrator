@@ -68,6 +68,66 @@ def selected_package_manifest(snapshot: KitCatalog, name: str) -> PackageManifes
     return manifest
 
 
+def require_providers(snapshot: KitCatalog, name: str, earlier: list[CatalogInstall]) -> None:
+    """Refuse `name` unless an earlier closure provides every interface its manifest requires.
+
+    An earlier closure provides what the snapshot's manifest of that same release declares.
+    """
+    provided = {
+        interface
+        for install in earlier
+        if _is_selected_release(snapshot, install.package)
+        for interface in selected_package_manifest(snapshot, install.package.name).provides
+    }
+    for interface in selected_package_manifest(snapshot, name).requires:
+        if interface not in provided:
+            providers = [
+                item.name
+                for item in snapshot.packages
+                if item.name in snapshot.manifests
+                and interface in selected_package_manifest(snapshot, item.name).provides
+            ]
+            raise InstallRefusal(
+                f"provider_missing: {name} requires {interface} "
+                f"(provided by {', '.join(providers) or 'no catalog package'})"
+            )
+
+
+def provider_first(snapshot: KitCatalog, names: list[str]) -> list[str]:
+    """`names` in their order, moving each after the names that provide what it requires.
+
+    A cycle keeps its order and is left to `require_providers` to refuse.
+    """
+    pending = list(dict.fromkeys(names))
+    manifests = {name: selected_package_manifest(snapshot, name) for name in pending}
+    ordered = []
+    while pending:
+        ready = next(
+            (
+                name
+                for name in pending
+                if not any(
+                    interface in manifests[other].provides
+                    for interface in manifests[name].requires
+                    for other in pending
+                    if other != name
+                )
+            ),
+            pending[0],
+        )
+        ordered.append(ready)
+        pending.remove(ready)
+    return ordered
+
+
+def _is_selected_release(snapshot: KitCatalog, component: InstallComponent) -> bool:
+    selected = next((item for item in snapshot.packages if item.name == component.name), None)
+    return selected is not None and (selected.version.version, selected.version.tag) == (
+        component.version,
+        component.tag,
+    )
+
+
 def load_catalog_binding(content: str) -> Binding | BindingV2:
     """Use the pinned kit's data-only version dispatch on snapshot bytes."""
     with tempfile.TemporaryDirectory(prefix="catalog-binding-") as scratch:

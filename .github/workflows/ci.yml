@@ -661,7 +661,6 @@ jobs:
       ORCHESTRATOR_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       # The pinned codegen-platform-services revision the proof deploys (sprint 1487).
       PLATFORM_SHA: 070dfb359f9a121546d1362ae84c9d0856cabf64
-      PACKAGE_VERSION: "0.1.2"
       PACKAGES: ${{ matrix.packages }}
     outputs:
       infra-marker-fresh: ${{ steps.infra.outputs['infra-marker-fresh'] }}
@@ -711,13 +710,18 @@ jobs:
           ref: ${{ env.ORCHESTRATOR_SHA }}
           persist-credentials: false
 
-      - name: Read the activated kit commit
+      # The harness and the catalog are the activated `commit`; the product template and the
+      # installed kit tooling are its `tooling_commit`. PACKAGE_VERSION is the tg-channels
+      # release that snapshot selects.
+      - name: Read the activated kit commits
         timeout-minutes: 1
         run: |
           set -euo pipefail
-          kit=$(python3 -c 'import yaml; print(yaml.safe_load(open("shared/catalog_activation.yaml"))["commit"])')
-          [[ "$kit" =~ ^[0-9a-f]{40}$ ]]
+          read -r kit tooling < <(python3 -c 'import yaml; a = yaml.safe_load(open("shared/catalog_activation.yaml")); print(a["commit"], a["tooling_commit"])')
+          [[ "$kit" =~ ^[0-9a-f]{40}$ && "$tooling" =~ ^[0-9a-f]{40}$ ]]
           echo "KIT_SHA=$kit" >> "$GITHUB_ENV"
+          echo "TOOLING_SHA=$tooling" >> "$GITHUB_ENV"
+          echo "PACKAGE_VERSION=0.2.0" >> "$GITHUB_ENV"
 
       - name: Check out the activated kit commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -820,7 +824,7 @@ jobs:
         run: |
           set -euo pipefail
           uv sync --frozen
-          .venv/bin/python -c 'import json, sys; from importlib.metadata import distribution as d; c = json.loads(d("codegen-kit-tooling").read_text("direct_url.json"))["vcs_info"]["commit_id"]; sys.exit(c != sys.argv[1])' "$KIT_SHA"
+          .venv/bin/python -c 'import json, sys; from importlib.metadata import distribution as d; c = json.loads(d("codegen-kit-tooling").read_text("direct_url.json"))["vcs_info"]["commit_id"]; sys.exit(c != sys.argv[1])' "$TOOLING_SHA"
 
       # The proof starts its API stack from that image. When the build failed or is still
       # running after 50 s, Compose builds the image itself and only the time is lost.

@@ -27,12 +27,13 @@ from src.kit_catalog import KitCatalogFailure, KitCatalogUnavailable
 
 PROJECT_ID = "5b1d0c9e-0f6a-4c55-9a43-6f0f1a7e2b10"
 CHANNELS = capability_id("tg-channels")
+RANKING = capability_id("ranking")
 #: What must never reach the PO model: package, distribution, version, key, recipe, commit.
 TECHNICAL = (
     "tg-channels",
     "tg_channels",
     "codegen-kit",
-    "0.1.2",
+    "0.2.0",
     "packages/",
     "starting_channels",
     "kit add",
@@ -118,6 +119,8 @@ def test_the_po_prompt_lists_capabilities_without_packages(activated_kit_catalog
     )
     assert isinstance(system, SystemMessage)
     assert f"- {CHANNELS}: Public Telegram channel lists" in system.content
+    assert f"- {RANKING}: Deterministic ranking of the caller's {CHANNELS} posts" in system.content
+    assert ": One-time text reminders that a product user schedules" in system.content
     assert "preview_capabilities" in system.content
     for technical in TECHNICAL:
         assert technical not in system.content
@@ -193,7 +196,7 @@ async def test_the_technical_half_is_stored_by_the_platform_itself(api, activate
     [(path, body, headers)] = api.posts
     assert path == "capability-previews/" and headers is None
     [module] = body["technical"]["modules"]
-    assert module["install"]["package"]["tag"] == "packages/tg-channels/v0.1.2"
+    assert module["install"]["package"]["tag"] == "packages/tg-channels/v0.2.0"
     assert module["install"]["catalog"]["commit"] == body["technical"]["activation"]["commit"]
 
 

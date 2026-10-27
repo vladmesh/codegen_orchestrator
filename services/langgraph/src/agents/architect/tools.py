@@ -50,8 +50,15 @@ from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO, RepositoryRole
 from shared.contracts.dto.task import TaskCreate, TaskStatus, TaskType
 
-from ...catalog_install import INSTALL_PYTHON_VERSION, InstallRefusal, local_build_identity
+from ...catalog_install import (
+    INSTALL_PYTHON_VERSION,
+    InstallRefusal,
+    local_build_identity,
+    require_providers,
+    selected_package_manifest,
+)
 from ...clients.api import api_client
+from ...kit_catalog import KitCatalog
 from ...planning_module_jobs import (
     PlanningModuleFacts,
     module_criteria_error,
@@ -73,11 +80,14 @@ def _planning_facts(config: RunnableConfig) -> PlanningModuleFacts:
 # Reset between architect invocations (module is long-lived but each graph
 # invocation starts fresh via reset_task_chain).
 _last_task_id: dict[str, str] = {}
+#: The catalog closures each story's chain installs, in the order it plans them.
+_chain_installs: dict[str, list[CatalogInstall]] = {}
 
 
 def reset_task_chain() -> None:
     """Reset auto-chaining state. Call before each architect invocation."""
     _last_task_id.clear()
+    _chain_installs.clear()
 
 
 #: One `kit add` invocation, up to where a command written in prose ends: a closing
@@ -286,13 +296,18 @@ async def plan_install(
     except (InstallRefusal, ValueError) as error:
         return {"error": str(error)}
     return await create_install_task(
-        payload, story_id=story_id, project_id=project_id, planning_attempt_id=planning_attempt_id
+        payload,
+        catalog=snapshot,
+        story_id=story_id,
+        project_id=project_id,
+        planning_attempt_id=planning_attempt_id,
     )
 
 
 async def create_install_task(
     payload: CatalogInstall,
     *,
+    catalog: KitCatalog,
     story_id: str,
     project_id: str,
     planning_attempt_id: str | None,
@@ -303,7 +318,9 @@ async def create_install_task(
     brief's stored capability plan — and is not resolved again here. A draft project
     ordered as backend,tg_bot is a product too: its task is created now, and install
     admission waits, durably, until the scaffolder has made its repository and workspace
-    ready (`workspace_not_ready`).
+    ready (`workspace_not_ready`). Every interface the release's manifest in `catalog`
+    requires is provided by a closure installed in the product or planned earlier in this
+    story's chain (`provider_missing`).
     """
     name = payload.package.name
     project = await api_client.get_project(project_id)
@@ -316,6 +333,18 @@ async def create_install_task(
         or not {"backend", "tg_bot"}.issubset(modules)
     ):
         return {"error": "product_incompatible: requires a backend,tg_bot product"}
+    try:
+        if selected_package_manifest(catalog, name).requires:
+            installed = await api_client.get_tasks_by_project(
+                project_id, task_type=TaskType.INSTALL, status=TaskStatus.DONE
+            )
+            require_providers(
+                catalog,
+                name,
+                [*selected_install_closures(installed), *_chain_installs.get(story_id, [])],
+            )
+    except InstallRefusal as error:
+        return {"error": str(error)}
     try:
         body = TaskCreate(
             title=f"Install catalog package {name}",
@@ -336,6 +365,7 @@ async def create_install_task(
         return {"error": str(error)}
     result = await api_client.create_task(body.model_dump(mode="json"))
     _last_task_id[story_id] = result.id
+    _chain_installs.setdefault(story_id, []).append(payload)
     return result.model_dump(mode="json")
 
 

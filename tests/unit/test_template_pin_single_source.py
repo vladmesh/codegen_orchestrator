@@ -93,9 +93,9 @@ def test_the_pinned_ref_is_a_literal_in_exactly_one_file() -> None:
     assert carriers == [], f"the template ref is repeated outside its definition: {carriers}"
 
 
-def test_render_of_the_pin_installed_tooling_and_activation_resolve_one_kit_commit() -> None:
-    """The render of the pinned ref, the services' kit tooling and the activated catalog
-    snapshot name one full kit commit, which the ref itself need not spell."""
+def test_render_installed_tooling_and_tooling_commit_name_one_kit_commit() -> None:
+    """The render of the pinned ref, the services' kit tooling and the activation's
+    `tooling_commit` name one full kit commit, which the ref itself need not spell."""
     installed = json.loads(distribution("codegen-kit-tooling").read_text("direct_url.json"))
     rendered = re.findall(
         r"codegen-product-kit\.git@([0-9a-f]{40})",
@@ -104,7 +104,7 @@ def test_render_of_the_pin_installed_tooling_and_activation_resolve_one_kit_comm
 
     assert template_pin.TEMPLATE_PIN.source == "gh:vladmesh/codegen-product-kit"
     assert rendered == [installed["vcs_info"]["commit_id"]]
-    assert CATALOG_ACTIVATION.commit == CATALOG_ACTIVATION.tooling_commit == rendered[0]
+    assert CATALOG_ACTIVATION.tooling_commit == rendered[0]
 
 
 def test_pinned_fixture_resolves_corrected_package_environment_tooling() -> None:

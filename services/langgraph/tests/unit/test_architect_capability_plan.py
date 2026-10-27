@@ -42,6 +42,7 @@ from tests.unit.factories import make_admission, make_project, make_repository
 pytestmark = pytest.mark.cpu_heavy
 
 CHANNELS = capability_id("tg-channels")
+RANKING = capability_id("ranking")
 PREVIEW_ID = "preview-" + "c" * 24
 
 
@@ -405,6 +406,62 @@ async def test_two_selections_of_one_capability_share_one_install(
     assert api.coverage == {
         "digest": ("plan-live", "task-1", None),
         "posts": ("plan-live", "task-1", None),
+    }
+
+
+@pytest.mark.asyncio
+async def test_top_channel_posts_install_their_provider_first_without_engineering(
+    activated_kit_catalog, kit_catalog_off_github
+):
+    """Order B: ranked posts of followed channels, asked for before the channels themselves."""
+    kit_catalog_off_github.read.return_value = activated_kit_catalog
+    brief, requests = _brief(with_scratch=False)
+    top = CapabilityRequest(
+        request_id="top", capability_id=RANKING, wording="top posts by views and freshness"
+    )
+    requests.insert(0, top)
+    content = brief.content.model_dump(mode="json")
+    content["must_requirements"].insert(
+        0, {"id": "top", "text": "Shows the top posts", "user_wording": "top posts"}
+    )
+    content["usage_examples"].insert(
+        0, {"requirement_id": "top", "user_sends": "/top", "product_answers": "Top posts"}
+    )
+    content["capabilities"]["capabilities"].insert(
+        0,
+        {
+            "request_id": "top",
+            "capability_id": RANKING,
+            "route": "module",
+            "requirement_ids": ["top"],
+        },
+    )
+    brief = CatalogBrief(
+        brief.title, brief.description, ProductBriefContent.model_validate(content)
+    )
+    plan = _stored_plan(activated_kit_catalog, brief, requests)
+    assert {item.route for item in plan.capabilities} == {CapabilityRoute.MODULE}
+    api = _PlanApi(brief, plan)
+
+    result = await _plan(api)
+
+    assert result["status"] == "success", result
+    assert [
+        (
+            task["type"],
+            task["install"]["package"]["name"],
+            task["install"]["package"]["version"],
+            task["install"]["binding"]["resource"],
+        )
+        for task in api.task_payloads
+    ] == [
+        ("install", "tg-channels", "0.2.0", "codegen_kit_tg_channels:bindings/default.yaml"),
+        ("install", "ranking", "0.1.0", "codegen_kit_ranking:bindings/default.yaml"),
+    ]
+    assert api.task_payloads[1]["blocked_by_task_id"] == "task-1"
+    assert api.coverage == {
+        "digest": ("plan-live", "task-1", None),
+        "top": ("plan-live", "task-2", None),
     }
 
 

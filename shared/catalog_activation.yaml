@@ -10,8 +10,8 @@
 # becomes plannable then, not when the kit's default branch moves.
 repository: https://github.com/vladmesh/codegen-product-kit.git
 raw_source: https://raw.githubusercontent.com/vladmesh/codegen-product-kit
-commit: 8caf935feb3d099a3b79162392df2efabb95c669
-catalog_sha256: a49295becf97dd616cd21e443149505eef44718a7fd251dde68aee15eeebe488
-catalog_digest: 697d3a9b6356670d3a59bef215a9819006cb61ac4015914695d165f879884be4
+commit: 1016891b5f1937ac486d0e0837f8c86b96619046
+catalog_sha256: 920aa2a585c4c10d3a7e4dfe46c2e8de32e4ad4425d9a6022a11ced9510958d6
+catalog_digest: f535ca012dd499f6100471e00d1f6e07ad0d525fa13c1e287fb80f1e37ac21fe
 core_version: 2.6.0
 tooling_commit: 8caf935feb3d099a3b79162392df2efabb95c669
