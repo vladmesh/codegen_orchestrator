@@ -29,10 +29,12 @@ def decode_qa_result(raw: str) -> dict:
     json_str = raw.strip()
     try:
         wrapper = json.loads(json_str)
-        if isinstance(wrapper, dict) and wrapper.get("type") == "result":
-            json_str = wrapper.get("result", "")
-    except json.JSONDecodeError:
-        pass  # Not a wrapper, continue with raw
+    except (ValueError, RecursionError):
+        wrapper = None  # Not a wrapper, continue with raw
+    if isinstance(wrapper, dict) and wrapper.get("type") == "result":
+        json_str = wrapper.get("result", "")
+        if not isinstance(json_str, str):
+            raise QAResultInvalid("the result wrapper's result field must be a string")
 
     code_block_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", json_str, re.DOTALL)
     if code_block_match:
@@ -40,7 +42,8 @@ def decode_qa_result(raw: str) -> dict:
 
     try:
         data = json.loads(json_str)
-    except json.JSONDecodeError as exc:
+    # A ValueError beyond JSONDecodeError is an integer over Python's digit limit.
+    except (ValueError, RecursionError) as exc:
         raise QAResultInvalid(f"the result is not JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise QAResultInvalid("the result is not a JSON object")
@@ -75,7 +78,9 @@ def _check_shape_error(index: int, check: object, causes: set[str]) -> str | Non
                 f"not-applicable check {index} must contain exactly name, "
                 "not_applicable (true), and detail fields"
             )
-    elif not isinstance(check, dict) or not isinstance(check.get("pass"), bool):
+    elif not isinstance(check, dict):
+        return f"check {index} must be an object"
+    elif not isinstance(check.get("pass"), bool):
         return f"check {index} pass must be a boolean"
     elif check["pass"] and set(check) != _PASSED_CHECK_FIELDS:
         return f"passed check {index} must contain exactly name, pass, and detail fields"
@@ -85,7 +90,9 @@ def _check_shape_error(index: int, check: object, causes: set[str]) -> str | Non
         return f"check {index} name must be a non-empty string"
     if not isinstance(check["detail"], str) or not check["detail"].strip():
         return f"check {index} detail must be a non-empty string"
-    if check.get("pass") is False and check["cause"] not in causes:
+    if check.get("pass") is False and (
+        not isinstance(check["cause"], str) or check["cause"] not in causes
+    ):
         return f"failed check {index} cause must be one of {', '.join(sorted(causes))}"
     return None
 

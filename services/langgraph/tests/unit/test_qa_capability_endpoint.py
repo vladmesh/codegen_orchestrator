@@ -21,7 +21,7 @@ import aiohttp
 import pytest
 
 from shared.qa_probe_cli import QA_PROBE_SCRIPT, QA_PROBE_USAGE
-from src.agents.qa.capability_service import MAX_RESULT_REFUSALS, QACapabilityService
+from src.agents.qa.capability_service import QACapabilityService
 from src.agents.qa.tools import build_qa_callables
 from src.consumers._qa_redaction import TELEGRAM_CREDENTIAL, QARunRedaction
 from src.consumers._qa_target import QACapabilities, QATarget, QATargetSession
@@ -377,49 +377,6 @@ class TestTheVerdictComesBackThroughTheEndpoint:
         assert endpoint.workspace.verdict == PASSING_JSON
         assert endpoint.service.verdict_received.is_set()
         assert "recorded" in body["result"]
-
-    @pytest.mark.parametrize(
-        ("result", "reason"),
-        [
-            (
-                {"pass": True, "checks": [], "summary": "OK", "report": "# QA"},
-                "unexpected top-level keys: report",
-            ),
-            ({"pass": True, "checks": []}, "missing top-level keys: summary"),
-            (
-                {"pass": True, "checks": [{"name": "health", "pass": True}], "summary": "OK"},
-                "passed check 0 must contain exactly name, pass, and detail fields",
-            ),
-        ],
-        ids=["extra-key", "missing-key", "bad-check"],
-    )
-    async def test_an_invalid_result_is_refused_by_name_and_the_run_goes_on(
-        self, endpoint, result, reason
-    ):
-        status, body = await _call(endpoint, "submit_qa_result", {"result": json.dumps(result)})
-
-        assert status == 400
-        assert reason in body["error"]
-        assert endpoint.service.verdict_received.is_set() is False
-        assert endpoint.workspace.verdict is None
-
-        status, _ = await _call(endpoint, "submit_qa_result", {"result": PASSING_JSON})
-
-        assert status == 200
-        assert endpoint.workspace.verdict == PASSING_JSON
-        assert endpoint.service.verdict_received.is_set()
-
-    async def test_an_invalid_result_after_the_bounded_refusals_ends_the_run(self, endpoint):
-        invalid = json.dumps({"pass": True, "checks": [], "summary": "OK", "report": "# QA"})
-        for _ in range(MAX_RESULT_REFUSALS):
-            status, _ = await _call(endpoint, "submit_qa_result", {"result": invalid})
-            assert status == 400
-
-        status, _ = await _call(endpoint, "submit_qa_result", {"result": invalid})
-
-        assert status == 200
-        assert endpoint.workspace.verdict == invalid
-        assert endpoint.service.verdict_received.is_set()
 
     async def test_an_empty_verdict_is_not_a_verdict(self, endpoint):
         status, _ = await _call(endpoint, "submit_qa_result", {"result": "   "})

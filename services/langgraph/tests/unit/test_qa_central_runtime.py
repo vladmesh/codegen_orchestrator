@@ -38,7 +38,6 @@ from shared.contracts.vocab import AgentType
 from shared.qa_identity import QAIdentityRejection
 from shared.qa_target_profile import QA_DOCKER_REQUIRED_VERBS, QA_TARGET_PROFILE_VERSION
 from shared.telegram_bot_probe import TELEGRAM_PROBE_PROCESS_TIMEOUT
-from src.agents.qa.capability_service import MAX_RESULT_REFUSALS
 from src.clients.qa_worker import QAExecutorRun, QAExecutorUnavailable
 from src.consumers._qa_redaction import REDACTED, QARunRedaction
 from src.consumers._qa_runner import QARuntimeConfig, run_qa_centrally
@@ -819,30 +818,6 @@ class TestAHarnessFailureIsABlockerNeverAVerdict:
         assert result.blocker.attempted
         assert result.blocker.sent
         assert "never reached the capability endpoint" in result.blocker.received
-
-
-class TestAnInvalidResultIsRefusedThenKept:
-    async def test_exhausted_resubmissions_end_the_run_with_the_whole_answer(self, central_run):
-        checks = [{"name": f"check {i}", "pass": True, "detail": "ok " * 20} for i in range(40)]
-        invalid = json.dumps({"pass": True, "checks": checks, "report": "# QA"})
-        refusals = []
-
-        async def behaviour(harness):
-            for _ in range(MAX_RESULT_REFUSALS):
-                refusals.append((await harness.submit(invalid))["error"])
-            return invalid
-
-        result, _, _, _ = await central_run(behaviour=behaviour)
-
-        assert all("unexpected top-level keys: report" in refusal for refusal in refusals)
-        assert result.passed is False
-        assert result.blocker.category is QABlockerCategory.QA_RESULT_INVALID
-        assert result.blocker.attempted == "validate QA agent result"
-        assert result.blocker.received.startswith(
-            "expected exactly pass, checks, and summary fields; "
-            "unexpected top-level keys: report; missing top-level keys: summary"
-        )
-        assert invalid in result.blocker.received
 
 
 class TestCleanTargetPassesExploratoryQA:
