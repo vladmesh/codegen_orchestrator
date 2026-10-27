@@ -623,7 +623,7 @@ class TestProcessQAJobFail:
             '{"pass": true, "checks": "claimed all good", "summary": "bad"}',
         ],
     )
-    async def test_invalid_agent_result_is_persisted_as_unknown_blocker(
+    async def test_invalid_agent_result_is_persisted_as_an_invalid_result_blocker(
         self, mock_api_client, mock_redis, qa_message_data, raw
     ):
         """Malformed agent output must terminate QA for human review, never pass or crash."""
@@ -637,7 +637,7 @@ class TestProcessQAJobFail:
         run_data = mock_api_client.patch.call_args[1]["json"]
         assert run_data["status"] == RunStatus.COMPLETED.value
         assert run_data["result"]["qa_outcome"] == QAOutcome.BLOCKED.value
-        assert run_data["result"]["blocker"]["category"] == "unknown"
+        assert run_data["result"]["blocker"]["category"] == "qa_result_invalid"
         mock_api_client.create_task.assert_not_called()
 
     @pytest.mark.asyncio
