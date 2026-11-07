@@ -73,6 +73,9 @@ def logs(caplog, capsys, monkeypatch):
     )
     for module in (main, proactive, redis_client):
         monkeypatch.setattr(module, "logger", structlog.get_logger(module.__name__))
+    config_store = MagicMock()
+    config_store.get.return_value = 60
+    monkeypatch.setattr(main, "_config_store", config_store)
     caplog.set_level(logging.DEBUG)
     yield
     structlog.configure(**previous)
@@ -120,7 +123,6 @@ async def test_deadline_then_two_late_replies_survive_listener_restart(client, m
 
     clock = [0.0]
     monkeypatch.setattr(po_delivery.time, "time", lambda: clock[0])
-    monkeypatch.setattr(main, "PO_RESPONSE_TIMEOUT_S", 60)
     monkeypatch.setattr(main, "_read_po_response", AsyncMock(return_value=None))
     bot = AsyncMock()
     for request_id, chat_id in (("late-a", 14310001), ("late-b", 14310002)):
@@ -157,8 +159,10 @@ async def test_deadline_then_two_late_replies_survive_listener_restart(client, m
 
 
 async def test_cancelled_wait_keeps_accepted_request_for_recovery(client, monkeypatch):
-    from src import main
+    from src import main, po_delivery
 
+    clock = [100.0]
+    monkeypatch.setattr(po_delivery.time, "time", lambda: clock[0])
     entered = asyncio.Event()
 
     async def wait_for_reply(*_args):
@@ -166,7 +170,6 @@ async def test_cancelled_wait_keeps_accepted_request_for_recovery(client, monkey
         await asyncio.Event().wait()
 
     monkeypatch.setattr(main, "_read_po_response", wait_for_reply)
-    monkeypatch.setattr(main, "PO_RESPONSE_TIMEOUT_S", 0)
     monkeypatch.setattr(main.uuid, "uuid4", lambda: "cancelled")
     bot = AsyncMock()
     waiter = asyncio.create_task(_send_to_po_and_wait(client, 14310001, TEXT, bot, 14310001))
@@ -175,6 +178,7 @@ async def test_cancelled_wait_keeps_accepted_request_for_recovery(client, monkey
     with pytest.raises(asyncio.CancelledError):
         await waiter
     assert await client.redis.zcard(PENDING_KEY) == 1
+    clock[0] = 161.0
     await client.publish_flat(
         "po:response:cancelled",
         to_flat_fields(POResponse(text="after cancel", telegram_chat_id="14310001")),

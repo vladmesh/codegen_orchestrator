@@ -1,7 +1,7 @@
 """Accepted direct PO replies remain owed across deadlines and bot lifetimes."""
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fakeredis.aioredis import FakeRedis
 import pytest
@@ -74,6 +74,38 @@ async def test_timely_delivery_and_replay_have_one_owner(client):
 
 
 @pytest.mark.asyncio
+async def test_configured_timeout_notice_keeps_eventual_reply_deliverable(client, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr("src.po_delivery.time.time", lambda: clock[0])
+    update = MagicMock()
+    update.effective_user.id = update.effective_chat.id = 101
+    update.effective_user.first_name = "User"
+    update.effective_user.language_code = "ru"
+    update.message.text = "question"
+    update.message.reply_text = AsyncMock()
+    context = MagicMock(user_data={}, bot=AsyncMock())
+    with (
+        patch.object(main, "_stream_client", client),
+        patch.object(main, "_config_store") as config_store,
+        patch.object(main.uuid, "uuid4", return_value="configured-late"),
+        patch.object(main, "_read_po_response", new=AsyncMock(return_value=None)) as read,
+    ):
+        config_store.get.return_value = 15
+        await main.handle_message(update, context)
+    update.message.reply_text.assert_awaited_once_with(text("ru", "po_timeout"))
+    assert read.await_args.args[-1] == 15
+    assert await client.redis.zcard(PENDING_KEY) == 1
+    clock[0] = 116.0
+    await _response(client, "configured-late", 101, "eventual answer")
+    listener = POResponseListener(client)
+    await listener.poll_once(context.bot)
+    await listener.poll_once(context.bot)
+    context.bot.send_message.assert_awaited_once()
+    assert context.bot.send_message.await_args.kwargs["text"] == "eventual answer"
+    assert await client.redis.zcard(PENDING_KEY) == 0
+
+
+@pytest.mark.asyncio
 async def test_direct_reply_uses_ordered_text_chunks(client):
     await register_request(client.redis, "chunks", 101, "en", 60)
     bot = AsyncMock()
@@ -83,7 +115,9 @@ async def test_direct_reply_uses_ordered_text_chunks(client):
 
 
 @pytest.mark.asyncio
-async def test_cancelled_wait_and_new_listener_recover_reply(client):
+async def test_cancelled_wait_and_new_listener_recover_reply(client, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr("src.po_delivery.time.time", lambda: clock[0])
     entered = asyncio.Event()
 
     async def wait_for_reply(*_args):
@@ -92,9 +126,10 @@ async def test_cancelled_wait_and_new_listener_recover_reply(client):
 
     with (
         patch("src.main.uuid.uuid4", return_value="cancelled"),
-        patch("src.main.PO_RESPONSE_TIMEOUT_S", 0),
+        patch("src.main._config_store") as config_store,
         patch("src.main._read_po_response", side_effect=wait_for_reply),
     ):
+        config_store.get.return_value = 60
         waiter = asyncio.create_task(
             main._send_to_po_and_wait(client, 101, "input", AsyncMock(), 101)
         )
@@ -103,6 +138,7 @@ async def test_cancelled_wait_and_new_listener_recover_reply(client):
         with pytest.raises(asyncio.CancelledError):
             await waiter
     assert await client.redis.zcard(PENDING_KEY) == 1
+    clock[0] = 161.0
     await _response(client, "cancelled", 101, "after restart")
     bot = AsyncMock()
     await POResponseListener(client).poll_once(bot)

@@ -4,7 +4,7 @@ import asyncio
 from datetime import UTC, datetime
 import json
 import os
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from telegram import Update
@@ -111,6 +111,9 @@ async def dispatch(monkeypatch):
     await client.connect()
     await client.redis.flushdb()
     monkeypatch.setattr(main, "_stream_client", client)
+    config_store = MagicMock()
+    config_store.get.return_value = 60
+    monkeypatch.setattr(main, "_config_store", config_store)
     monkeypatch.setattr(
         middleware, "_check_user_in_db", AsyncMock(side_effect=lambda uid: _registered(uid, False))
     )
@@ -157,7 +160,7 @@ async def dispatch(monkeypatch):
     finally:
         wire.release_callback.set()
         # Release held replies even after a red concurrency assertion, so stop drains.
-        monkeypatch.setattr(main, "PO_RESPONSE_TIMEOUT_S", 0.1)
+        config_store.get.return_value = 0.1
         for _, fields in await client.redis.xrange(PO_INPUT_QUEUE):
             from shared.contracts.queues.po import unprotect_po_payload
 
