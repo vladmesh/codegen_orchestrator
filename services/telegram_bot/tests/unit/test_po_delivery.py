@@ -1,6 +1,7 @@
 """Accepted direct PO replies remain owed across deadlines and bot lifetimes."""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fakeredis.aioredis import FakeRedis
@@ -102,6 +103,48 @@ async def test_configured_timeout_notice_keeps_eventual_reply_deliverable(client
     await listener.poll_once(context.bot)
     context.bot.send_message.assert_awaited_once()
     assert context.bot.send_message.await_args.kwargs["text"] == "eventual answer"
+    assert await client.redis.zcard(PENDING_KEY) == 0
+
+
+@pytest.mark.asyncio
+async def test_submillisecond_policy_stays_pending_then_delivers_once(client, monkeypatch):
+    wall = [100.0]
+    monotonic = [0.0]
+    blocks = []
+    monkeypatch.setattr("src.po_delivery.time", SimpleNamespace(time=lambda: wall[0]))
+    monkeypatch.setattr(main, "time", SimpleNamespace(monotonic=lambda: monotonic[0]))
+
+    async def empty_response(_streams, *, count, block):
+        blocks.append(block)
+        monotonic[0] = 0.001
+        return []
+
+    update = MagicMock()
+    update.effective_user.id = update.effective_chat.id = 101
+    update.effective_user.first_name = "User"
+    update.effective_user.language_code = "en"
+    update.message.text = "question"
+    update.message.reply_text = AsyncMock()
+    context = MagicMock(user_data={}, bot=AsyncMock())
+    with (
+        patch.object(main, "_stream_client", client),
+        patch.object(main, "_config_store") as config_store,
+        patch.object(main.uuid, "uuid4", return_value="short-wait"),
+        patch.object(client.redis, "xread", side_effect=empty_response),
+    ):
+        config_store.get.return_value = 0.0005
+        await main.handle_message(update, context)
+
+    assert blocks == [1]
+    update.message.reply_text.assert_awaited_once_with(text("en", "po_timeout"))
+    assert await client.redis.zcard(PENDING_KEY) == 1
+    wall[0] = 101.0
+    await _response(client, "short-wait", 101, "late answer")
+    listener = POResponseListener(client)
+    await listener.poll_once(context.bot)
+    await listener.poll_once(context.bot)
+    context.bot.send_message.assert_awaited_once()
+    assert context.bot.send_message.await_args.kwargs["text"] == "late answer"
     assert await client.redis.zcard(PENDING_KEY) == 0
 
 

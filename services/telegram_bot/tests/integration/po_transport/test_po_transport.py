@@ -19,7 +19,7 @@ from shared.contracts.queues.po import (
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_GROUP, PO_PROACTIVE_QUEUE
 from shared.redis import RedisStreamClient
 from src.main import _read_po_response, _send_to_po_and_wait
-from src.po_delivery import PENDING_KEY, POResponseListener
+from src.po_delivery import PENDING_KEY, POResponseListener, POResponsePending
 from src.proactive import ProactiveOutcome, process_proactive_entry
 from src.texts import text as bot_text
 
@@ -116,6 +116,30 @@ async def test_actual_telegram_input_and_direct_response_roundtrip(client, monke
         if not send.done():
             send.cancel()
         await asyncio.gather(send, return_exceptions=True)
+
+
+async def test_submillisecond_empty_stream_returns_pending_and_late_reply_once(client, monkeypatch):
+    from src import main
+
+    main._config_store.get.return_value = 0.0005
+    monkeypatch.setattr(main.uuid, "uuid4", lambda: "short-wait")
+    bot = AsyncMock()
+    with pytest.raises(POResponsePending):
+        await asyncio.wait_for(
+            _send_to_po_and_wait(client, 14310001, TEXT, bot, 14310001),
+            timeout=1,
+        )
+    assert await client.redis.zcard(PENDING_KEY) == 1
+    await client.publish_flat(
+        "po:response:short-wait",
+        to_flat_fields(POResponse(text="late answer", telegram_chat_id="14310001")),
+    )
+    listener = POResponseListener(client)
+    await listener.poll_once(bot)
+    await listener.poll_once(bot)
+    bot.send_message.assert_awaited_once()
+    assert bot.send_message.await_args.kwargs["text"] == "late answer"
+    assert await client.redis.zcard(PENDING_KEY) == 0
 
 
 async def test_deadline_then_two_late_replies_survive_listener_restart(client, monkeypatch):
