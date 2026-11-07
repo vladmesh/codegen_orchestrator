@@ -19,6 +19,7 @@ from shared.contracts.queues.po import (
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_GROUP, PO_PROACTIVE_QUEUE
 from shared.redis import RedisStreamClient
 from src.main import _read_po_response, _send_to_po_and_wait
+from src.po_delivery import PENDING_KEY, POResponseListener
 from src.proactive import ProactiveOutcome, process_proactive_entry
 from src.texts import text as bot_text
 
@@ -102,9 +103,11 @@ async def test_actual_telegram_input_and_direct_response_roundtrip(client, monke
             )
             no_secrets(await client.redis.xrange(response_stream))
             await client.ack(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, entry.message_id)
-            assert await send == TEXT
+            request_id, response = await send
+            assert request_id == entry.value.request_id
+            assert response.text == TEXT
             no_secrets(await client.redis.xrange(PO_INPUT_QUEUE))
-            assert not await client.redis.exists(response_stream)
+            assert await client.redis.exists(response_stream)
     finally:
         await reader.aclose()
         if not send.done():
@@ -112,11 +115,80 @@ async def test_actual_telegram_input_and_direct_response_roundtrip(client, monke
         await asyncio.gather(send, return_exceptions=True)
 
 
+async def test_deadline_then_two_late_replies_survive_listener_restart(client, monkeypatch):
+    from src import main, po_delivery
+
+    clock = [0.0]
+    monkeypatch.setattr(po_delivery.time, "time", lambda: clock[0])
+    monkeypatch.setattr(main, "PO_RESPONSE_TIMEOUT_S", 60)
+    monkeypatch.setattr(main, "_read_po_response", AsyncMock(return_value=None))
+    bot = AsyncMock()
+    for request_id, chat_id in (("late-a", 14310001), ("late-b", 14310002)):
+        monkeypatch.setattr(main.uuid, "uuid4", lambda request_id=request_id: request_id)
+        with pytest.raises(po_delivery.POResponsePending):
+            await _send_to_po_and_wait(client, chat_id, TEXT, bot, chat_id)
+    assert await client.redis.zcard(PENDING_KEY) == 2
+    clock[0] = 90.0
+    await client.publish_flat(
+        "po:response:late-b",
+        to_flat_fields(POResponse(text="answer b", telegram_chat_id="14310002")),
+    )
+    await client.publish_flat(
+        "po:response:late-a",
+        to_flat_fields(POResponse(text="answer a", telegram_chat_id="14310001")),
+    )
+    restarted = POResponseListener(client)
+    await restarted.poll_once(bot)
+    await POResponseListener(client).poll_once(bot)
+    delivered = {
+        (call.kwargs["chat_id"], call.kwargs["text"]) for call in bot.send_message.await_args_list
+    }
+    assert delivered == {(14310001, "answer a"), (14310002, "answer b")}
+    assert bot.send_message.await_count == 2
+    assert await client.redis.zcard(PENDING_KEY) == 0
+
+    await client.publish_flat(
+        "po:response:released-pending",
+        to_flat_fields(POResponse(text="released answer", telegram_chat_id="14310001")),
+    )
+    await POResponseListener(client).poll_once(bot)
+    assert bot.send_message.await_count == 3
+    assert bot.send_message.await_args.kwargs["text"] == "released answer"
+
+
+async def test_cancelled_wait_keeps_accepted_request_for_recovery(client, monkeypatch):
+    from src import main, po_delivery
+
+    entered = asyncio.Event()
+
+    async def wait_for_reply(*_args):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(main, "_read_po_response", wait_for_reply)
+    monkeypatch.setattr(main, "PO_RESPONSE_TIMEOUT_S", 0)
+    monkeypatch.setattr(main.uuid, "uuid4", lambda: "cancelled")
+    bot = AsyncMock()
+    waiter = asyncio.create_task(_send_to_po_and_wait(client, 14310001, TEXT, bot, 14310001))
+    await entered.wait()
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert await client.redis.zcard(PENDING_KEY) == 1
+    await client.publish_flat(
+        "po:response:cancelled",
+        to_flat_fields(POResponse(text="after cancel", telegram_chat_id="14310001")),
+    )
+    await POResponseListener(client).poll_once(bot)
+    bot.send_message.assert_awaited_once()
+    assert bot.send_message.await_args.kwargs["text"] == "after cancel"
+
+
 async def test_reply_delivery_exception_does_not_render_echoed_secret(client, monkeypatch):
     from src import main
 
     monkeypatch.setattr(main, "_stream_client", client)
-    monkeypatch.setattr(main, "_send_response_to_user", AsyncMock(side_effect=ValueError(TEXT)))
+    monkeypatch.setattr(main, "deliver_response", AsyncMock(side_effect=ValueError(TEXT)))
     update = MagicMock()
     update.effective_user.id = update.effective_chat.id = 14310001
     update.effective_user.first_name = TEXT

@@ -3,6 +3,10 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-11-07
+
+- Direct PO replies remain owed after the bot's 60-second wait and recover on restart, so accepted answers can reach users without resubmission.
+
 ## 2026-10-27
 
 - The activated catalog moves to kit 1016891b (tg-channels 0.2.0, ranking 0.1.0), a descendant of tooling 0.12.0;

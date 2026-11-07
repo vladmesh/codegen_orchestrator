@@ -87,7 +87,8 @@ Redis destination, so moving a token to a different stream/cache fails authentic
 | Storage | Released writers | Trusted readers | Protected content |
 |---|---|---|---|
 | `po:input` | Telegram `main._send_to_po_and_wait`; scheduler `owner_notifications` and `supervisor.stage_notices`; LangGraph engineering/deploy/Architect callback and story helpers; reminder poller | PO `consume_typed` | All logical flat fields, including text, user name, QA facts and notice reference |
-| `po:response:<request>` | PO consumer success/fixed-error replies | Telegram `main._read_po_response`, direct XREAD | All response fields |
+| `po:response:<request>` | PO consumer success/fixed-error replies | Telegram `main._read_po_response` and `po_delivery.read_response` | All response fields |
+| `po:delivery:address:<request>` | Telegram accepted-request registrar | Telegram direct-reply delivery owner | Recipient and locale in the existing authenticated Fernet envelope |
 | `po:proactive` | PO consumer gated final reply; `notify_user`; `_events.publish_proactive_message` | Telegram `consume` then `process_proactive_entry` | All fields, including model echoes and delivery identifiers |
 | PO stream `:dlq` | Shared Redis quarantine | Authorized maintenance/debugging consumers | Entire quarantine record, including original wire body and reason |
 | `po:reminders` | PO `set_reminder`, ZADD | PO reminder poller | Entire JSON member, including text/reason and addressing |

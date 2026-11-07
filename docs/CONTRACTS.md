@@ -68,7 +68,7 @@ are repository-relative.
 | `provisioner:queue` | `infrastructure-workers` | `queues/provisioner.py` | scheduler-infrastructure | infra-service |
 | `provisioner:results` | scheduler / bot groups | `queues/provisioner.py` | infra-service | scheduler-infrastructure, telegram-bot |
 | `po:input` | `po-consumer` | `queues/po.py` | bot and system producers | PO consumer |
-| `po:response:{request_id}` | direct response | `queues/po.py` | PO consumer | telegram-bot |
+| `po:response:{request_id}` | direct response | `queues/po.py` | PO consumer | telegram-bot delivery owner; see [lifecycle invariants](contracts/lifecycle-invariants.md#direct-po-reply-delivery) |
 | `po:proactive` | `tg-bot-proactive` | `queues/po.py` | PO notification tools | telegram-bot |
 
 The native Pub/Sub channel `scheduler:wake` (`queues/scheduler_wake.py`) is not a queue: its
@@ -428,7 +428,7 @@ invariants are in [REST story, task, run, and policy surfaces](contracts/story-t
 | worker commands/responses | `queues/worker.py` | langgraph / worker-manager | worker-manager / langgraph | only lifecycle owner creates, deletes, or answers a worker command |
 | worker input/output | `shared/contracts/worker_turn.py`, LangGraph worker clients, wrapper/broker | developer/QA node | wrapper / developer/QA node | `WorkerTurnInput` is validated before lease; engineering turns carry attempt+deadline together, while QA turns omit both; broker request id and accepted output settle a leased turn |
 | provisioning request/result | `queues/provisioner.py` | scheduler-infrastructure / infra-service | infra-service / scheduler-infrastructure and bot | result consumers use their own group semantics |
-| PO input/response/proactive | `queues/po.py` | bot/system/PO | PO/bot | flat codec and recipient validation apply before consumption |
+| PO input/response/proactive | `queues/po.py` | bot/system/PO | PO/bot | flat codec and recipient validation apply before consumption; direct replies remain owed after the interactive deadline until bot delivery settles |
 | progress event | `events.py` | services | bot | progress does not authorise state transition |
 
 Every developer and QA executor is owned by a project, initiating Run, and
