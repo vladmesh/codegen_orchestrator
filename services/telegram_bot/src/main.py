@@ -217,7 +217,7 @@ async def _read_po_response(
             return None
 
         # Redis treats BLOCK 0 as an indefinite wait.
-        block_ms = 2000 if remaining >= 2 else max(1, math.ceil(remaining * 1000))
+        block_ms = max(1, math.ceil(min(remaining, 2) * 1000))
 
         try:
             messages = await redis.xread(
