@@ -1,8 +1,8 @@
 """Durable ownership of direct PO replies sent to Telegram."""
 
 import asyncio
+import secrets
 import time
-import uuid
 
 import structlog
 
@@ -84,7 +84,7 @@ async def deliver_response(redis, bot, request_id: str, response: POResponse) ->
     if await redis.exists(_settled_key(request_id)):
         await _cleanup_settled(redis, request_id)
         return False
-    token = uuid.uuid4().hex
+    token = secrets.token_hex(16)
     claim = _claim_key(request_id)
     if not await redis.set(claim, token, nx=True, ex=CLAIM_SECONDS):
         return False
