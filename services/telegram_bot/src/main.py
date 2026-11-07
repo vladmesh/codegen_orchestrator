@@ -283,9 +283,7 @@ async def _send_to_po_and_wait(
         request_id=request_id,
         user_name=user_name,
     )
-    await register_request(
-        client.redis, request_id, telegram_chat_id, locale, wait_seconds
-    )
+    await register_request(client.redis, request_id, telegram_chat_id, locale, wait_seconds)
     await client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(msg))
 
     logger.info(
