@@ -157,7 +157,7 @@ async def test_deadline_then_two_late_replies_survive_listener_restart(client, m
 
 
 async def test_cancelled_wait_keeps_accepted_request_for_recovery(client, monkeypatch):
-    from src import main, po_delivery
+    from src import main
 
     entered = asyncio.Event()
 
