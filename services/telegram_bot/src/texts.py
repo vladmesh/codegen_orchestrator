@@ -52,7 +52,9 @@ TEXTS: dict[str, dict[str, str]] = {
             "⚠️ Attempts with an unknown cost: {count}. Actual spending may be higher."
         ),
         "balance_incomplete": "⚠️ Some costs are still being settled.",
-        "po_timeout": "Timed out waiting for a reply. Please try again later.",
+        "po_timeout": (
+            "Your request is still being processed. I’ll send the answer here when it’s ready."
+        ),
         "message_failed": "Could not process your message. Please try again later.",
         # Registration
         "promo_activated": "Promo code activated. Welcome!",
@@ -141,7 +143,7 @@ TEXTS: dict[str, dict[str, str]] = {
             "⚠️ Попыток с неизвестной стоимостью: {count}. Фактические расходы могут быть выше."
         ),
         "balance_incomplete": "⚠️ Часть расходов ещё уточняется.",
-        "po_timeout": "Таймаут ожидания ответа. Попробуйте позже.",
+        "po_timeout": "Ваш запрос ещё обрабатывается. Я пришлю ответ сюда, когда он будет готов.",
         "message_failed": "Не удалось обработать сообщение. Попробуйте позже.",
         # Registration
         "promo_activated": "Промокод активирован. Добро пожаловать!",

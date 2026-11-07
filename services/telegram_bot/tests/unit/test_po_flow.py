@@ -1,7 +1,7 @@
 """Tests for direct PO ReactAgent communication via Redis Streams."""
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -10,7 +10,10 @@ from src.main import (
     _keep_typing,
     _read_po_response,
     _send_to_po_and_wait,
+    handle_message,
 )
+from src.po_delivery import POResponsePending
+from src.texts import text as bot_text
 
 
 def response_xread(data):
@@ -157,7 +160,7 @@ class TestSendToPOAndWait:
                 chat_id=42,
             )
 
-        assert result == "Project created!"
+        assert result[1] == POResponse(**response_data)
 
     @pytest.mark.asyncio
     async def test_message_format_plain_fields(self, mock_stream_client, mock_bot):
@@ -204,8 +207,8 @@ class TestSendToPOAndWait:
         assert fields["user_name"] == "Vlad"
 
     @pytest.mark.asyncio
-    async def test_error_response_raises_runtime_error(self, mock_stream_client, mock_bot):
-        """Should raise RuntimeError when PO returns error."""
+    async def test_error_response_remains_owed(self, mock_stream_client, mock_bot):
+        """The error response stays owed until a safe apology is delivered."""
         error_data = {
             "text": "An error occurred, please try again.",
             "telegram_chat_id": "42",
@@ -213,22 +216,20 @@ class TestSendToPOAndWait:
         }
         mock_stream_client.redis.xread = response_xread(error_data)
 
-        with pytest.raises(RuntimeError, match="PO returned an error response"):
-            await _send_to_po_and_wait(
-                client=mock_stream_client,
-                telegram_chat_id=42,
-                text="hello",
-                bot=mock_bot,
-                chat_id=42,
-            )
+        _, response = await _send_to_po_and_wait(
+            client=mock_stream_client,
+            telegram_chat_id=42,
+            text="hello",
+            bot=mock_bot,
+            chat_id=42,
+        )
+        assert response.error == "true"
 
     @pytest.mark.asyncio
     async def test_timeout_raises_timeout_error(self, mock_stream_client, mock_bot):
-        """Should raise TimeoutError when PO doesn't respond in time."""
-        mock_stream_client.redis.xread = AsyncMock(return_value=[])
-
+        """A deadline ends typing without discarding the accepted reply."""
         with (
-            patch("src.main.PO_RESPONSE_TIMEOUT_S", 0.1),
+            patch("src.main._read_po_response", new=AsyncMock(return_value=None)),
             pytest.raises(TimeoutError),
         ):
             await _send_to_po_and_wait(
@@ -238,10 +239,53 @@ class TestSendToPOAndWait:
                 bot=mock_bot,
                 chat_id=42,
             )
+        mock_stream_client.redis.delete.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_stream_cleanup_after_success(self, mock_stream_client, mock_bot):
-        """Should delete response stream after reading."""
+    async def test_pending_notice_is_localized(self, mock_stream_client):
+        """A timed-out accepted request gets a pending notice in its chat language."""
+        update = MagicMock()
+        update.effective_user.id = update.effective_chat.id = 42
+        update.effective_user.first_name = "User"
+        update.effective_user.language_code = "ru"
+        update.message.text = "request"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock(user_data={}, bot=AsyncMock())
+        with (
+            patch("src.main._stream_client", mock_stream_client),
+            patch(
+                "src.main._send_to_po_and_wait",
+                new=AsyncMock(side_effect=POResponsePending("r")),
+            ),
+            patch("src.main.is_settled", new=AsyncMock(return_value=False)),
+        ):
+            await handle_message(update, context)
+        update.message.reply_text.assert_awaited_once_with(bot_text("ru", "po_timeout"))
+
+    @pytest.mark.asyncio
+    async def test_settled_reply_does_not_get_later_pending_notice(self, mock_stream_client):
+        """The listener may settle the reply at the interactive deadline."""
+        update = MagicMock()
+        update.effective_user.id = update.effective_chat.id = 42
+        update.effective_user.first_name = "User"
+        update.effective_user.language_code = "en"
+        update.message.text = "request"
+        update.message.reply_text = AsyncMock()
+        context = MagicMock(user_data={}, bot=AsyncMock())
+        with (
+            patch("src.main._stream_client", mock_stream_client),
+            patch(
+                "src.main._send_to_po_and_wait",
+                new=AsyncMock(side_effect=POResponsePending("r")),
+            ),
+            patch("src.main.is_settled", new=AsyncMock(return_value=True)),
+        ):
+            await handle_message(update, context)
+        update.message.reply_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_response_remains_owed_until_delivery(self, mock_stream_client, mock_bot):
+        """Reading a reply alone cannot settle delivery."""
         response_data = {"text": "done", "telegram_chat_id": "42"}
         mock_stream_client.redis.xread = response_xread(response_data)
 
@@ -253,42 +297,37 @@ class TestSendToPOAndWait:
             chat_id=42,
         )
 
-        # Verify delete was called with the response stream
-        mock_stream_client.redis.delete.assert_called_once()
-        deleted_stream = mock_stream_client.redis.delete.call_args.args[0]
-        assert deleted_stream.startswith("po:response:")
+        mock_stream_client.redis.delete.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_stream_cleanup_after_error(self, mock_stream_client, mock_bot):
-        """Should delete response stream even after error."""
+    async def test_error_response_remains_owed_until_delivery(self, mock_stream_client, mock_bot):
+        """An error reply also has a delivery obligation."""
         error_data = {"text": "error", "telegram_chat_id": "42", "error": "true"}
         mock_stream_client.redis.xread = response_xread(error_data)
 
-        with pytest.raises(RuntimeError):
-            await _send_to_po_and_wait(
-                client=mock_stream_client,
-                telegram_chat_id=42,
-                text="hello",
-                bot=mock_bot,
-                chat_id=42,
-            )
-
-        mock_stream_client.redis.delete.assert_called_once()
+        await _send_to_po_and_wait(
+            client=mock_stream_client,
+            telegram_chat_id=42,
+            text="hello",
+            bot=mock_bot,
+            chat_id=42,
+        )
+        mock_stream_client.redis.delete.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_empty_response_raises(self, mock_stream_client, mock_bot):
-        """Should raise RuntimeError when PO returns empty text."""
+    async def test_empty_response_remains_owed(self, mock_stream_client, mock_bot):
+        """An empty reply is settled through the safe apology path."""
         empty_data = {"text": "", "telegram_chat_id": "42"}
         mock_stream_client.redis.xread = response_xread(empty_data)
 
-        with pytest.raises(RuntimeError, match="empty response"):
-            await _send_to_po_and_wait(
-                client=mock_stream_client,
-                telegram_chat_id=42,
-                text="hello",
-                bot=mock_bot,
-                chat_id=42,
-            )
+        _, response = await _send_to_po_and_wait(
+            client=mock_stream_client,
+            telegram_chat_id=42,
+            text="hello",
+            bot=mock_bot,
+            chat_id=42,
+        )
+        assert response.text == ""
 
     @pytest.mark.asyncio
     async def test_typing_indicator_started_and_cancelled(self, mock_stream_client, mock_bot):

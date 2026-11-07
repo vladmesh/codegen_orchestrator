@@ -238,7 +238,7 @@ MESSAGE_BREAK = "\x1e"
 
 
 class POResponse(RejectsLegacyRecipientField):
-    """Synchronous PO response (po:response:{request_id})."""
+    """PO reply to one accepted request (po:response:{request_id})."""
 
     text: str
     telegram_chat_id: str

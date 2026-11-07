@@ -26,6 +26,7 @@ async def po_payload_keys(redis) -> dict[str, str]:
         ("po:input:dlq", "dlq"),
         ("po:proactive:dlq", "dlq"),
         ("po:response:*:dlq", "dlq"),
+        ("po:delivery:address:*", "delivery_address"),
         (f"{LATEST_OWNER_EVENT_KEY_PREFIX}*", "owner_events"),
     ):
         async for key in redis.scan_iter(match=pattern):
@@ -45,6 +46,8 @@ async def verify_po_storage(redis) -> None:
                 elif category == "owner_events":
                     raw = await redis.get(key)
                     values = [json.loads(raw)] if raw is not None else []
+                elif category == "delivery_address":
+                    values = [await redis.hgetall(key)]
                 else:
                     # Bound each read; retained history may be larger than one turn.
                     cursor = "-"

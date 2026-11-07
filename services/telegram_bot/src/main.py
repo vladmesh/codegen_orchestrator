@@ -48,10 +48,16 @@ from .handlers import cancel_add_user, handle_add_user_input, handle_callback_qu
 from .keyboards import main_menu_keyboard  # noqa: E402
 from .middleware import auth_middleware, is_admin  # noqa: E402
 from .notifications import ProvisionerNotifier  # noqa: E402
+from .po_delivery import (  # noqa: E402
+    POResponseListener,
+    POResponsePending,
+    deliver_response,
+    is_settled,
+    register_request,
+)
 from .proactive import (  # noqa: E402
     PROACTIVE_RECLAIM_IDLE_MS,
     process_proactive_entry,
-    send_text,
 )
 from .texts import text, user_locale  # noqa: E402
 from .update_processor import UserUpdateProcessor  # noqa: E402
@@ -61,6 +67,7 @@ logger = structlog.get_logger()
 # Globals (initialized in post_init)
 _provisioner_notifier_task: asyncio.Task | None = None
 _proactive_listener_task: asyncio.Task | None = None
+_po_response_listener_task: asyncio.Task | None = None
 _stream_client: RedisStreamClient | None = None
 
 
@@ -243,34 +250,23 @@ async def _send_to_po_and_wait(
     bot,
     chat_id: int,
     user_name: str = "",
-) -> str:
-    """Send message to PO via po:input and wait for response.
+    locale: str = "en",
+) -> tuple[str, POResponse]:
+    """Record an owed PO input and wait up to the interactive deadline.
 
-    Orchestrates: publish → typing task → XREAD → cleanup.
-
-    Args:
-        client: Redis stream client
-        telegram_chat_id: Telegram chat the answer is delivered to
-        text: User message text
-        bot: Telegram bot instance
-        chat_id: Chat ID for typing indicator
-
-    Returns:
-        PO response text
-
-    Raises:
-        TimeoutError: If no response within PO_RESPONSE_TIMEOUT_S
-        RuntimeError: If PO returned an error
+    The accepted request remains owed if waiting ends or is cancelled.
     """
     request_id = str(uuid.uuid4())
     response_stream = f"po:response:{request_id}"
 
-    # Publish to PO input stream
     msg = POUserMessage(
         text=text,
         telegram_chat_id=str(telegram_chat_id),
         request_id=request_id,
         user_name=user_name,
+    )
+    await register_request(
+        client.redis, request_id, telegram_chat_id, locale, PO_RESPONSE_TIMEOUT_S
     )
     await client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(msg))
 
@@ -280,38 +276,22 @@ async def _send_to_po_and_wait(
         request_id=request_id,
     )
 
-    # Start typing indicator in background
     typing_task = asyncio.create_task(_keep_typing(bot, chat_id))
 
     try:
-        # Wait for response
         response = await _read_po_response(client.redis, response_stream, PO_RESPONSE_TIMEOUT_S)
 
         if response is None:
-            raise TimeoutError(f"PO did not respond within {PO_RESPONSE_TIMEOUT_S}s")
+            raise POResponsePending(request_id)
 
-        # Check for error response
-        if response.error == "true":
-            raise RuntimeError("PO returned an error response")
-
-        if not response.text:
-            raise RuntimeError("PO returned empty response")
-
-        return response.text
+        return request_id, response
 
     finally:
-        # Cancel typing indicator
         typing_task.cancel()
         try:
             await typing_task
         except asyncio.CancelledError:
             pass
-
-        # Cleanup response stream (best effort)
-        try:
-            await client.redis.delete(response_stream)
-        except Exception as e:
-            logger.debug("response_stream_cleanup_failed", error_type=type(e).__name__)
 
 
 async def handle_message(update: Update, context) -> None:
@@ -339,23 +319,26 @@ async def handle_message(update: Update, context) -> None:
 
         # Send to PO and wait for response
         user_name = update.effective_user.first_name or ""
-        response_text = await _send_to_po_and_wait(
+        request_id, response = await _send_to_po_and_wait(
             client=_stream_client,
             telegram_chat_id=user_id,
             text=message_text,
             bot=context.bot,
             chat_id=chat_id,
             user_name=user_name,
+            locale=user_locale(update),
         )
 
-        # Send response to user
-        await _send_response_to_user(context.application, user_id, response_text)
+        delivered = await deliver_response(_stream_client.redis, context.bot, request_id, response)
+        if not delivered and not await is_settled(_stream_client.redis, request_id):
+            await update.message.reply_text(text(user_locale(update), "po_timeout"))
 
     # What the user sees when their message could not be answered is fixed on
     # purpose: exception text is for the logs, never for the chat.
-    except TimeoutError:
-        logger.warning("po_response_timeout", user_id=user_id)
-        await update.message.reply_text(text(user_locale(update), "po_timeout"))
+    except POResponsePending as pending:
+        logger.info("po_response_pending", user_id=user_id, request_id=pending.request_id)
+        if not await is_settled(_stream_client.redis, pending.request_id):
+            await update.message.reply_text(text(user_locale(update), "po_timeout"))
     except RuntimeError as e:
         logger.error("po_response_error", error_type=type(e).__name__, user_id=user_id)
         await update.message.reply_text(text(user_locale(update), "message_failed"))
@@ -412,15 +395,10 @@ class ProactiveListener:
         logger.info("proactive_listener_stopped")
 
 
-async def _send_response_to_user(app: Application, telegram_chat_id: int, text: str) -> None:
-    """Send PO's reply to the Telegram user."""
-    await send_text(app.bot, telegram_chat_id, text)
-    logger.info("worker_response_sent", telegram_chat_id=telegram_chat_id, text_length=len(text))
-
-
 async def post_init(app: Application) -> None:
     """Post-initialization: connect Redis and start listeners."""
-    global _provisioner_notifier_task, _proactive_listener_task, _stream_client
+    global _provisioner_notifier_task, _proactive_listener_task
+    global _po_response_listener_task, _stream_client
 
     settings = get_settings()
 
@@ -437,13 +415,17 @@ async def post_init(app: Application) -> None:
     # Start proactive PO messages listener
     proactive = ProactiveListener(client=_stream_client)
     _proactive_listener_task = await proactive.start(app.bot)
+    _po_response_listener_task = asyncio.create_task(
+        POResponseListener(_stream_client).run(app.bot)
+    )
 
     logger.info("telegram_bot_initialized", admin_count=len(admin_ids))
 
 
 async def post_shutdown(app: Application) -> None:
     """Cleanup on shutdown."""
-    global _provisioner_notifier_task, _proactive_listener_task, _stream_client
+    global _provisioner_notifier_task, _proactive_listener_task
+    global _po_response_listener_task, _stream_client
 
     # Stop provisioner notifier
     if _provisioner_notifier_task:
@@ -462,6 +444,14 @@ async def post_shutdown(app: Application) -> None:
         except asyncio.CancelledError:
             pass
         _proactive_listener_task = None
+
+    if _po_response_listener_task:
+        _po_response_listener_task.cancel()
+        try:
+            await _po_response_listener_task
+        except asyncio.CancelledError:
+            pass
+        _po_response_listener_task = None
 
     # Close Redis
     if _stream_client:

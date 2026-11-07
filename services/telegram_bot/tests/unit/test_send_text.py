@@ -201,30 +201,6 @@ def _long_reply() -> str:
     return "\n\n".join(PARAGRAPHS) + MESSAGE_BREAK + _words(2000)
 
 
-class TestReplyPath:
-    @pytest.mark.asyncio
-    async def test_reply_goes_through_send_text(self):
-        app = MagicMock()
-        with patch("src.main.send_text", new=AsyncMock()) as sender:
-            await bot_main._send_response_to_user(app, CHAT_ID, "hello")
-
-        sender.assert_awaited_once_with(app.bot, CHAT_ID, "hello")
-
-    @pytest.mark.asyncio
-    async def test_long_reply_arrives_in_order_under_the_limit(self):
-        app = MagicMock()
-        app.bot = StubBot()
-
-        await bot_main._send_response_to_user(app, CHAT_ID, _long_reply())
-
-        chunks = app.bot.texts
-        assert len(chunks) == 5
-        assert chunks[0].startswith("Paragraph 000.")
-        assert chunks[1].endswith("Paragraph 299.")
-        assert chunks[2:] == [_words(800), _words(800), _words(400)]
-        assert all(utf16_length(chunk) <= LIMIT for chunk in chunks)
-
-
 def _proactive(text: str) -> POProactiveMessage:
     return POProactiveMessage(text=text, telegram_chat_id=str(CHAT_ID))
 

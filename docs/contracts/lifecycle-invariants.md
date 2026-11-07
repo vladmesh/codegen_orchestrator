@@ -4,6 +4,36 @@ Canonical runtime invariants for Run persistence, engineering results, deploy ha
 
 Back to the [contracts index](../CONTRACTS.md).
 
+## Direct PO reply delivery
+
+The Telegram bot records a request id and encrypted recipient/locale binding in
+`po:delivery:pending` and `po:delivery:address:<request_id>` before publishing
+`po:input`. The input publication can be ambiguous, so a transport error leaves
+the obligation recorded. The 60-second synchronous wait owns typing and the
+interactive result only. At its deadline the bot stops typing and sends a
+localized pending notice; the accepted request remains owed. The response
+stays on the protected `po:response:<request_id>` stream until final delivery.
+
+The timely handler and the startup/shutdown-managed response listener use the
+same Redis claim and settlement marker. The listener polls due requests and
+also discovers released protected response streams with no delivery index, so
+responses present during an upgrade remain deliverable. It validates each
+indexed response against the encrypted recipient before sending through
+`send_text`. PO success is sent as text; PO error or empty text becomes the
+fixed localized failure message. Repeated reads and a second bot incarnation
+observe the settlement marker rather than sending again. A failed Telegram
+call leaves the request and stream for retry. A dead incarnation's claim
+expires after five minutes. The bot deletes the stream and binding only after
+Telegram accepts the final text. It retains the settlement marker for seven
+days; pending obligations have no age-based expiry.
+
+Shutdown cancels the listener, not the Redis obligation. A restart resumes
+from the pending index or an existing response stream. Telegram and Redis do
+not share a transaction: if Telegram accepted a message but the process died
+before the settlement marker was written, recovery may send it again. A
+partially accepted multi-chunk message can likewise repeat accepted chunks.
+The marker suppresses replay after settlement, not an ambiguous send/ack.
+
 The [publication and engineering-stop contract](commit-publication-and-stop.md)
 defines durable park/terminal settlement before broker ACK, owned retryable stop,
 checkout preservation and explicit agent-free handoff. Recovery facts never
