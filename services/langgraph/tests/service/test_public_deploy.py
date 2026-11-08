@@ -28,7 +28,10 @@ from src.consumers.deploy import _route_deploy_result
 from src.deploy_fence import DeployFence
 from src.subgraphs.devops.deployer import DeployerNode
 from src.subgraphs.devops.graph import create_devops_subgraph
-from tests.service._public_deploy_transport import ContentGitHubFixture, released_workflow
+from tests.service._public_deploy_transport import (
+    ContentGitHubFixture as _ContentGitHubFixture,
+    released_workflow,
+)
 
 HEAD = "a" * 40
 BUILT = "e" * 40
@@ -36,6 +39,16 @@ FIX_HEAD = "b" * 40
 FIX_BUILT = "f" * 40
 UNKNOWN_KEY = "UNKNOWN_REQUIRED_SELF_ADDRESS"
 CANARY = "123456789:AA-public-deploy-secret-canary"
+
+
+class ContentGitHubFixture(_ContentGitHubFixture):
+    """Use the fixture's preopened fake transport for the deploy lifecycle."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        await self.close()
 
 
 @asynccontextmanager

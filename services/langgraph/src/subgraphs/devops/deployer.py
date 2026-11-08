@@ -654,105 +654,147 @@ class DeployerNode(FunctionalNode):
 
         try:
             github = GitHubAppClient()
+            async with github:
+                if await self._run_cancelled(run_id):
+                    return {"deployment_result": {"status": "cancelled"}}
 
-            if await self._run_cancelled(run_id):
-                return {"deployment_result": {"status": "cancelled"}}
+                await require_backend_workflow(github, owner, repo, server_ip, deployed_commit_sha)
 
-            await require_backend_workflow(github, owner, repo, server_ip, deployed_commit_sha)
+                # 0. Nothing is deployed before the deployed commit's images are
+                # read back. The references come from the resolved environment, so
+                # this asks about exactly the tags the target will pull, and it runs
+                # before any of this deploy's external effects — the payload write,
+                # the fence, the Actions run — so a refusal costs nothing and
+                # changes nothing.
+                resolved_images = image_references({**non_secret_values, **secret_values})
+                image_digests, refusal = await self._published_images(
+                    resolved_images, project_id, deployed_commit_sha, diagnostic_secrets
+                )
+                if refusal is not None:
+                    return refusal
 
-            # 0. Nothing is deployed before the deployed commit's images are
-            # read back. The references come from the resolved environment, so
-            # this asks about exactly the tags the target will pull, and it runs
-            # before any of this deploy's external effects — the payload write,
-            # the fence, the Actions run — so a refusal costs nothing and
-            # changes nothing.
-            resolved_images = image_references({**non_secret_values, **secret_values})
-            image_digests, refusal = await self._published_images(
-                resolved_images, project_id, deployed_commit_sha, diagnostic_secrets
-            )
-            if refusal is not None:
-                return refusal
+                if await self._run_cancelled(run_id):
+                    return {"deployment_result": {"status": "cancelled"}}
 
-            if await self._run_cancelled(run_id):
-                return {"deployment_result": {"status": "cancelled"}}
+                # 0.5 Fetch connection credentials for the same target server.
+                server, ssh_key = await self._server_credentials(server_handle)
+                if not ssh_key:
+                    logger.error("deploy_ssh_key_not_found", server_handle=server_handle)
+                    return {
+                        "deployment_result": {
+                            "status": "failed",
+                            "error": f"No SSH key in DB for server {server_handle}",
+                        },
+                        "errors": [f"No SSH key for server {server_handle}"],
+                    }
 
-            # 0.5 Fetch connection credentials for the same target server.
-            server, ssh_key = await self._server_credentials(server_handle)
-            if not ssh_key:
-                logger.error("deploy_ssh_key_not_found", server_handle=server_handle)
-                return {
-                    "deployment_result": {
-                        "status": "failed",
-                        "error": f"No SSH key in DB for server {server_handle}",
-                    },
-                    "errors": [f"No SSH key for server {server_handle}"],
-                }
+                # Every write below checks this deploy's claim on the project deploy
+                # lock immediately before it is made; everything above only reads.
+                deploy_fence = state["deploy_fence"]
 
-            # Every write below checks this deploy's claim on the project deploy
-            # lock immediately before it is made; everything above only reads.
-            deploy_fence = state["deploy_fence"]
+                # 1. Build and encode DOTENV (include project_id for Promtail label discovery)
+                dotenv_b64 = _encode_deploy_payload(
+                    {**non_secret_values, **secret_values}, project_id, diagnostic_secrets
+                )
 
-            # 1. Build and encode DOTENV (include project_id for Promtail label discovery)
-            dotenv_b64 = _encode_deploy_payload(
-                {**non_secret_values, **secret_values}, project_id, diagnostic_secrets
-            )
-
-            # 2. Write deploy secrets to GitHub
-            logger.info(
-                "deploy_secrets_preview",
-                server_ip=server_ip,
-                port=port,
-                project_name=project_name,
-                owner=owner,
-                repo=repo,
-                dotenv_len=len(dotenv_b64),
-            )
-            secrets_ok = await write_deploy_secrets(
-                github,
-                owner,
-                repo,
-                {
-                    "DOTENV": dotenv_b64,
-                    "DEPLOY_HOST": server_ip,
-                    "DEPLOY_USER": server.ssh_user,
-                    "DEPLOY_SSH_KEY": ssh_key,
-                    "DEPLOY_PORT": str(port),
-                    "PROJECT_NAME": project_name,
-                },
-                deploy_fence=deploy_fence,
-                diagnostic_secrets=diagnostic_secrets,
-            )
-
-            if not secrets_ok:
-                logger.error(
-                    "deploy_secrets_write_failed",
+                # 2. Write deploy secrets to GitHub
+                logger.info(
+                    "deploy_secrets_preview",
                     server_ip=server_ip,
+                    port=port,
+                    project_name=project_name,
                     owner=owner,
                     repo=repo,
+                    dotenv_len=len(dotenv_b64),
                 )
-                return {
-                    "deployment_result": {
-                        "status": "failed",
-                        "error": "Failed to write all required GitHub Actions secrets",
+                secrets_ok = await write_deploy_secrets(
+                    github,
+                    owner,
+                    repo,
+                    {
+                        "DOTENV": dotenv_b64,
+                        "DEPLOY_HOST": server_ip,
+                        "DEPLOY_USER": server.ssh_user,
+                        "DEPLOY_SSH_KEY": ssh_key,
+                        "DEPLOY_PORT": str(port),
+                        "PROJECT_NAME": project_name,
                     },
-                    "errors": ["Deploy refused: GitHub Actions secrets are incomplete"],
-                }
+                    deploy_fence=deploy_fence,
+                    diagnostic_secrets=diagnostic_secrets,
+                )
 
-            # 2.5 Fence older runs when this deploy must be the last writer, and
-            # only once the payload above is already the repository's. What the
-            # workflow deploys is read from the repository secrets when it runs,
-            # not from whoever asked for it, so ordering it this way leaves the
-            # smallest window: a run that could read the old payload is on
-            # Actions by now and is stopped here, and one created afterwards —
-            # a worker resuming past its dispatch lease, above all — reads what
-            # this just wrote. Smallest, not none; the caller confirms the
-            # removal by reading the deployed service.
-            if state.get("fence_active_deploys"):
+                if not secrets_ok:
+                    logger.error(
+                        "deploy_secrets_write_failed",
+                        server_ip=server_ip,
+                        owner=owner,
+                        repo=repo,
+                    )
+                    return {
+                        "deployment_result": {
+                            "status": "failed",
+                            "error": "Failed to write all required GitHub Actions secrets",
+                        },
+                        "errors": ["Deploy refused: GitHub Actions secrets are incomplete"],
+                    }
+
+                # 2.5 Fence older runs when this deploy must be the last writer, and
+                # only once the payload above is already the repository's. What the
+                # workflow deploys is read from the repository secrets when it runs,
+                # not from whoever asked for it, so ordering it this way leaves the
+                # smallest window: a run that could read the old payload is on
+                # Actions by now and is stopped here, and one created afterwards —
+                # a worker resuming past its dispatch lease, above all — reads what
+                # this just wrote. Smallest, not none; the caller confirms the
+                # removal by reading the deployed service.
+                if state.get("fence_active_deploys"):
+                    try:
+                        await fence_active_deploys(github, owner, repo, project_id, deploy_fence)
+                    except DeployRefusedError as e:
+                        logger.error(
+                            "deploy_fence_unproven",
+                            project_id=project_id,
+                            reason=type(e).__name__,
+                            error=redact_diagnostic(e, secrets=diagnostic_secrets),
+                        )
+                        return {
+                            "deployment_result": {
+                                "status": "failed",
+                                "error": redact_diagnostic(e, secrets=diagnostic_secrets),
+                            },
+                            "errors": [
+                                "Deploy refused: "
+                                f"{redact_diagnostic(e, secrets=diagnostic_secrets)}"
+                            ],
+                        }
+
+                if await self._run_cancelled(run_id):
+                    return {"deployment_result": {"status": "cancelled"}}
+
+                # 3. Dispatch deploy.yml and wait for it, pinned to the deployed commit
                 try:
-                    await fence_active_deploys(github, owner, repo, project_id, deploy_fence)
+                    run_info, rerun = await self._dispatch_and_wait(
+                        github,
+                        owner,
+                        repo,
+                        deployed_commit_sha,
+                        run_id,
+                        deploy_fence,
+                        diagnostic_secrets,
+                    )
+                except DeployDispatchWithdrawnError as e:
+                    # Stopped before anything left the system. Reported as cancelled,
+                    # like a run stopped on Actions, so the consumer records the same
+                    # terminal outcome either way.
+                    logger.info(
+                        "deploy_withdrawn_before_dispatch",
+                        project_id=project_id,
+                        error=redact_diagnostic(e, secrets=diagnostic_secrets),
+                    )
+                    return {"deployment_result": {"status": "cancelled"}}
                 except DeployRefusedError as e:
                     logger.error(
-                        "deploy_fence_unproven",
+                        "deploy_refused",
                         project_id=project_id,
                         reason=type(e).__name__,
                         error=redact_diagnostic(e, secrets=diagnostic_secrets),
@@ -767,108 +809,67 @@ class DeployerNode(FunctionalNode):
                         ],
                     }
 
-            if await self._run_cancelled(run_id):
-                return {"deployment_result": {"status": "cancelled"}}
-
-            # 3. Dispatch deploy.yml and wait for it, pinned to the deployed commit
-            try:
-                run_info, rerun = await self._dispatch_and_wait(
-                    github,
-                    owner,
-                    repo,
-                    deployed_commit_sha,
-                    run_id,
-                    deploy_fence,
-                    diagnostic_secrets,
-                )
-            except DeployDispatchWithdrawnError as e:
-                # Stopped before anything left the system. Reported as cancelled,
-                # like a run stopped on Actions, so the consumer records the same
-                # terminal outcome either way.
                 logger.info(
-                    "deploy_withdrawn_before_dispatch",
-                    project_id=project_id,
-                    error=redact_diagnostic(e, secrets=diagnostic_secrets),
+                    "deploy_completed",
+                    owner=owner,
+                    repo=repo,
+                    run_id=run_info["id"],
+                    head_sha=run_info.get("head_sha"),
+                    rerun=rerun,
                 )
-                return {"deployment_result": {"status": "cancelled"}}
-            except DeployRefusedError as e:
-                logger.error(
-                    "deploy_refused",
+
+                # 4. Create service deployment record
+                modules = _modules_label(project_spec)
+
+                application_id = await _create_deployment_record(
                     project_id=project_id,
-                    reason=type(e).__name__,
-                    error=redact_diagnostic(e, secrets=diagnostic_secrets),
+                    service_name=project_name,
+                    server_handle=server_handle,
+                    port=port,
+                    deploy_fence=deploy_fence,
+                    deployment_info={
+                        "repo_full_name": f"{owner}/{repo}",
+                        "branch": "main",
+                        "modules": modules,
+                        # Read by the admin console topology to draw product → service links.
+                        "platform_services": _platform_services(state.get("environment_contract")),
+                        "env_overrides_digest": env_overrides_digest(state.get("env_overrides")),
+                        # What ran, not what was asked for. A SHA alone is a claim
+                        # about a commit; these are the references the target pulled
+                        # and the digests they resolved to when the gate read them.
+                        "image_references": resolved_images,
+                        "image_digests": image_digests,
+                        # The commit these images and this checkout are, beside the
+                        # story commit `deployed_sha` names. The two differ on every
+                        # PR-merge deploy and the record has to be able to say both.
+                        "deployed_commit_sha": run_info.get("head_sha"),
+                    },
+                    # Stays the story's commit: the redundant-deploy key and the
+                    # story evidence read it, and silently moving it to the built
+                    # commit would change what every existing record means.
+                    deployed_sha=head_sha,
+                    diagnostic_secrets=diagnostic_secrets,
                 )
+
+                deployed_url = backend_base_url(state)
+                suffix = " (after rerun)" if rerun else ""
                 return {
                     "deployment_result": {
-                        "status": "failed",
-                        "error": redact_diagnostic(e, secrets=diagnostic_secrets),
+                        "status": "success",
+                        "run_id": run_info["id"],
+                        "image_references": resolved_images,
+                        "image_digests": image_digests,
+                        # The commit these images and this checkout are, beside the
+                        # story commit `deployed_sha` names. The two differ on every
+                        # PR-merge deploy and the record has to be able to say both.
+                        "deployed_commit_sha": run_info.get("head_sha"),
                     },
-                    "errors": [
-                        f"Deploy refused: {redact_diagnostic(e, secrets=diagnostic_secrets)}"
+                    "deployed_url": deployed_url,
+                    "application_id": application_id,
+                    "messages": [
+                        AIMessage(content=f"Deployment successful{suffix}! URL: {deployed_url}")
                     ],
                 }
-
-            logger.info(
-                "deploy_completed",
-                owner=owner,
-                repo=repo,
-                run_id=run_info["id"],
-                head_sha=run_info.get("head_sha"),
-                rerun=rerun,
-            )
-
-            # 4. Create service deployment record
-            modules = _modules_label(project_spec)
-
-            application_id = await _create_deployment_record(
-                project_id=project_id,
-                service_name=project_name,
-                server_handle=server_handle,
-                port=port,
-                deploy_fence=deploy_fence,
-                deployment_info={
-                    "repo_full_name": f"{owner}/{repo}",
-                    "branch": "main",
-                    "modules": modules,
-                    # Read by the admin console topology to draw product → service links.
-                    "platform_services": _platform_services(state.get("environment_contract")),
-                    "env_overrides_digest": env_overrides_digest(state.get("env_overrides")),
-                    # What ran, not what was asked for. A SHA alone is a claim
-                    # about a commit; these are the references the target pulled
-                    # and the digests they resolved to when the gate read them.
-                    "image_references": resolved_images,
-                    "image_digests": image_digests,
-                    # The commit these images and this checkout are, beside the
-                    # story commit `deployed_sha` names. The two differ on every
-                    # PR-merge deploy and the record has to be able to say both.
-                    "deployed_commit_sha": run_info.get("head_sha"),
-                },
-                # Stays the story's commit: the redundant-deploy key and the
-                # story evidence read it, and silently moving it to the built
-                # commit would change what every existing record means.
-                deployed_sha=head_sha,
-                diagnostic_secrets=diagnostic_secrets,
-            )
-
-            deployed_url = backend_base_url(state)
-            suffix = " (after rerun)" if rerun else ""
-            return {
-                "deployment_result": {
-                    "status": "success",
-                    "run_id": run_info["id"],
-                    "image_references": resolved_images,
-                    "image_digests": image_digests,
-                    # The commit these images and this checkout are, beside the
-                    # story commit `deployed_sha` names. The two differ on every
-                    # PR-merge deploy and the record has to be able to say both.
-                    "deployed_commit_sha": run_info.get("head_sha"),
-                },
-                "deployed_url": deployed_url,
-                "application_id": application_id,
-                "messages": [
-                    AIMessage(content=f"Deployment successful{suffix}! URL: {deployed_url}")
-                ],
-            }
 
         except DeployFenceLost:
             raise
