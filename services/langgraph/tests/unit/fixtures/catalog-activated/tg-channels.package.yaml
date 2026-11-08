@@ -1,6 +1,6 @@
 protocol_version: 1
 name: tg-channels
-version: 0.2.0
+version: 0.2.1
 requires_core: ">=2.4,<3"
 provides: [tg-channels.posts.v1]
 requires: []

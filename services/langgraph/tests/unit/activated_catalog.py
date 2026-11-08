@@ -2,7 +2,7 @@
 
 `fixtures/catalog-activated/` holds `packages/catalog.yaml` at the activated commit
 (`shared/catalog_activation.yaml`) and the default binding and manifest of the published
-`tg-channels` 0.2.0, `ranking` 0.1.0 and `reminders` 0.5.0 tags, so the preview and the plan
+`tg-channels` 0.2.1, `ranking` 0.1.0 and `reminders` 0.5.0 tags, so the preview and the plan
 are exercised on the catalog production plans from, without the network. They are the released
 bytes with one substitution: the platform service the tg-channels manifest's platform sources
 name is `fictional-reader`, because the orchestrator never names a platform service (the CI

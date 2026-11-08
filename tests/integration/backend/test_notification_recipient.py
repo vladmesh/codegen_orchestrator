@@ -16,7 +16,6 @@ ever reaches the transport:
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import sys
 from unittest.mock import AsyncMock
@@ -24,6 +23,8 @@ import uuid
 
 import pytest
 import structlog
+
+from tests.path_loader import load_module
 
 # The integration runner has PYTHONPATH=/app with services/ mounted; the
 # scheduler's modules import each other as `src.*`, so its directory goes on the
@@ -71,10 +72,7 @@ def _load_bot_delivery():
             "proactive.py",
         )
     )
-    spec = importlib.util.spec_from_file_location("telegram_bot_proactive", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_module("telegram_bot_proactive", path)
 
 
 @pytest.fixture

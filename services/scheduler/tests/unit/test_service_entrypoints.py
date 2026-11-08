@@ -465,6 +465,8 @@ async def test_pipeline_routes_each_hint_only_to_its_own_loop(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_worker_inventory_is_complete_and_disjoint(monkeypatch):
+    # health_checker validates its polling policy when infrastructure is imported.
+    monkeypatch.setenv("HEALTH_CHECK_INTERVAL", "60")
     from src import infrastructure, maintenance, pipeline
 
     inventories = {}

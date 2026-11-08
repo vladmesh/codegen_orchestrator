@@ -518,7 +518,7 @@ async def list_runs_holding_qa_ssh_grants(
     """
     if (after_created_at is None) != (after_id is None):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="after_created_at and after_id name one cursor and must be given together",
         )
 
@@ -889,19 +889,19 @@ async def update_run(
     _require_retained_empty_outcome(run, update_data, engineering_attempt)
     if engineering_attempt is not None and run.type != RunType.ENGINEERING.value:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="engineering_attempt is only valid for engineering runs",
         )
     if engineering_attempt is not None and requested_status not in _TERMINAL_RUN_STATUSES:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="engineering_attempt is only valid with a terminal engineering status",
         )
     if qa_accounting is not None and (
         run.type != RunType.QA.value or requested_status not in _TERMINAL_RUN_STATUSES
     ):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="qa_accounting is only valid with a terminal QA status",
         )
 

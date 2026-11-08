@@ -18,7 +18,6 @@ These run without a live stack: HTTP is driven through MockTransport and the
 SQL paths are captured at the subprocess boundary.
 """
 
-import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,16 +29,14 @@ import pytest
 
 from shared import live_harness_cleanup
 from shared.tests.project_cleanup import PROJECT_BRIEF_TASK_STORY_DELETE_ORDER
+from tests.path_loader import load_module
 
 pytestmark = pytest.mark.needs_no_api_credential
 
 
 def _load_clean_live_tests():
     path = Path(__file__).resolve().parents[2] / "scripts" / "clean_live_tests.py"
-    spec = importlib.util.spec_from_file_location("clean_live_tests", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_module("clean_live_tests", path)
 
 
 def _assert_before(sql: str, earlier: str, later: str) -> None:
