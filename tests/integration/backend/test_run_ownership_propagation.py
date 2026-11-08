@@ -28,7 +28,6 @@ really derives. Everything about the *identity* is the platform's own; nothing
 about it is the test's.
 """
 
-import importlib.util
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -37,6 +36,7 @@ import pytest
 
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.worker import WorkerLabel, WorkerOwnership
+from tests.path_loader import load_module
 
 from .test_worker_ownership_labels import _by_labels, _dead_owned_worker
 from .worker_authority import assert_persisted_worker_authority
@@ -52,9 +52,7 @@ def _ownership_manifest(run_id: str):
     would own — not for a look-alike string invented here.
     """
     module_path = Path(__file__).resolve().parents[2] / "live" / "live_harness.py"
-    spec = importlib.util.spec_from_file_location("live_harness_for_ownership", module_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = load_module("live_harness_for_ownership", module_path)
     return module.OwnershipManifest(run_id=run_id)
 
 
