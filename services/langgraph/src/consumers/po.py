@@ -611,6 +611,7 @@ async def _handle_message(
                 telegram_chat_id=telegram_chat_id,
                 project_id=data.get("project_id", ""),
                 story_id=story_id,
+                event=event,
             ),
         )
     invoke_config = {"configurable": configurable, "recursion_limit": 50}
