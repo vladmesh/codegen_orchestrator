@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock
 from fakeredis.aioredis import FakeRedis
 from langchain_core.messages import AIMessage
 import pytest
+from structlog.testing import capture_logs
 
 from shared.contracts.queues.po import POSystemEvent, POUserMessage
 from shared.contracts.vocab import OwnerNotificationEvent
@@ -682,3 +683,110 @@ class TestGetProductSituation:
         assert answer == f"No project {PROJECT} among this user's projects."
         assert [route for route, _, _ in situation_api.requests] == ["projects"]
         stream.publish_flat.assert_not_called()
+
+
+class TestSnapshotLogging:
+    @pytest.mark.parametrize("requested", [False, True])
+    async def test_completed_snapshot_logs_metadata_once(
+        self, situation_api, gate_stories, client, requested
+    ):
+        _whole_world(situation_api, gate_stories, datetime.now(UTC))
+        subject = SituationSubject(
+            telegram_chat_id=CHAT, project_id=PROJECT, story_id="" if requested else STORY
+        )
+        with capture_logs() as logs:
+            block = await build_situation(
+                ApiSituationReader(situation_api.client),
+                client.redis,
+                subject,
+                requested=requested,
+            )
+        assert logs == [
+            {
+                "event": "po_situation_built",
+                "log_level": "info",
+                "telegram_chat_id": CHAT,
+                "project_id": PROJECT,
+                "story_id": STORY,
+                "po_event": "",
+                "requested": requested,
+                "unknown_fields": [],
+                "block_length": len(block),
+            }
+        ]
+
+    async def test_failed_source_logs_one_safe_warning_and_unknown_field(
+        self, situation_api, gate_stories, client
+    ):
+        _whole_world(situation_api, gate_stories, datetime.now(UTC))
+        client.redis.get = AsyncMock(side_effect=ConnectionError("secret-password"))
+        with capture_logs() as logs:
+            block = await build_situation(
+                ApiSituationReader(situation_api.client),
+                client.redis,
+                SituationSubject(telegram_chat_id=CHAT, project_id=PROJECT, story_id=STORY),
+            )
+        assert _line(block, "User's last message in this chat") == "unknown"
+        assert logs == [
+            {
+                "event": "po_situation_field_unknown",
+                "log_level": "warning",
+                "field": "last_user_message",
+                "error_type": "ConnectionError",
+            },
+            {
+                "event": "po_situation_built",
+                "log_level": "info",
+                "telegram_chat_id": CHAT,
+                "project_id": PROJECT,
+                "story_id": STORY,
+                "po_event": "",
+                "requested": False,
+                "unknown_fields": ["last_user_message"],
+                "block_length": len(block),
+            },
+        ]
+
+    async def test_system_event_snapshot_logs_trigger_identity(
+        self, graph, client, situation_api, gate_stories
+    ):
+        _whole_world(situation_api, gate_stories, datetime.now(UTC))
+        with capture_logs() as logs:
+            await _handle_message(graph, client, CHAT, _event())
+        built = [row for row in logs if row["event"] == "po_situation_built"]
+        assert len(built) == 1
+        assert built[0]["po_event"] == OwnerNotificationEvent.STORY_BLOCKED
+        assert built[0]["story_id"] == STORY
+        assert built[0]["telegram_chat_id"] == CHAT
+        assert built[0]["block_length"] == len(_snapshot_of(graph))
+
+    @pytest.mark.parametrize(
+        ("requested", "route", "unknown"),
+        [
+            (False, "story", ["story", "status", "status_entered_at"]),
+            (True, "project_stories", ["story", "other_ordered_stories", "platform_work"]),
+        ],
+    )
+    async def test_shared_source_failure_records_each_unknown_field_once(
+        self, situation_api, gate_stories, client, requested, route, unknown
+    ):
+        _whole_world(situation_api, gate_stories, datetime.now(UTC))
+        situation_api.faults[route] = RAISE
+        with capture_logs() as logs:
+            block = await build_situation(
+                ApiSituationReader(situation_api.client),
+                client.redis,
+                SituationSubject(
+                    telegram_chat_id=CHAT,
+                    project_id=PROJECT,
+                    story_id="" if requested else STORY,
+                ),
+                requested=requested,
+            )
+        warnings = [row for row in logs if row["event"] == "po_situation_field_unknown"]
+        assert [row["field"] for row in warnings] == unknown
+        assert all(row["error_type"] == "ConnectError" for row in warnings)
+        [built] = [row for row in logs if row["event"] == "po_situation_built"]
+        assert built["unknown_fields"] == unknown
+        assert built["story_id"] == ("" if requested else STORY)
+        assert built["block_length"] == len(block)

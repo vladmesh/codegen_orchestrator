@@ -248,6 +248,7 @@ class SituationSubject:
     telegram_chat_id: str
     project_id: str = ""
     story_id: str = ""
+    event: str = ""
 
 
 class _Snapshot:
@@ -265,6 +266,16 @@ class _Snapshot:
         self.subject = subject
         self.now = now
         self._memo: dict[object, asyncio.Future] = {}
+        self.unknown_fields: list[str] = []
+
+    async def field(self, name: str, render: Callable[[], Awaitable[str]]) -> str:
+        """One field's text, or ``unknown`` when any read behind it failed."""
+        try:
+            return await render()
+        except Exception as exc:  # noqa: BLE001 — totality: one source never fails the turn
+            self.unknown_fields.append(name)
+            _log_unknown(name, exc)
+            return UNKNOWN
 
     async def _once(self, key: object, read: Callable[[], Awaitable[object]]) -> object:
         # A task, not a result: concurrent fields share one read in flight. A read
@@ -338,21 +349,11 @@ class _Snapshot:
         return found
 
 
-async def _field(name: str, render: Callable[[], Awaitable[str]]) -> str:
-    """One field's text, or ``unknown`` when any read behind it failed."""
-    try:
-        return await render()
-    except Exception as exc:  # noqa: BLE001 — totality: one source never fails the turn
-        _log_unknown(name, exc)
-        return UNKNOWN
-
-
 def _log_unknown(name: str, exc: Exception) -> None:
     logger.warning(
         "po_situation_field_unknown",
         field=name,
         error_type=type(exc).__name__,
-        error=str(exc)[:300],
     )
 
 
@@ -382,14 +383,14 @@ async def build_situation(
     else:
         story_lines = ["- Story: none named by this event"]
 
-    last_message = await _field("last_user_message", lambda: _render_last_message(snap))
-    application = await _field("application", lambda: _render_application(snap))
-    others = await _field("other_ordered_stories", lambda: _render_other_orders(snap, story_id))
-    platform = await _field("platform_work", lambda: _render_platform_work(snap))
-    deferred = await _field("deferred_notices", lambda: _render_deferred(snap))
+    last_message = await snap.field("last_user_message", lambda: _render_last_message(snap))
+    application = await snap.field("application", lambda: _render_application(snap))
+    others = await snap.field("other_ordered_stories", lambda: _render_other_orders(snap, story_id))
+    platform = await snap.field("platform_work", lambda: _render_platform_work(snap))
+    deferred = await snap.field("deferred_notices", lambda: _render_deferred(snap))
 
     occasion = "requested" if requested else "built for this system event"
-    return "\n".join(
+    block = "\n".join(
         [
             f"{SNAPSHOT_HEADING} ({occasion}, {snap.now:%Y-%m-%d %H:%M} UTC)",
             "Read by code just now. It is not a message from the user and not stored in "
@@ -405,12 +406,25 @@ async def build_situation(
         ]
     )
 
+    logger.info(
+        "po_situation_built",
+        story_id=story_id,
+        telegram_chat_id=subject.telegram_chat_id,
+        project_id=subject.project_id,
+        po_event=subject.event,
+        requested=requested,
+        unknown_fields=snap.unknown_fields,
+        block_length=len(block),
+    )
+    return block
+
 
 async def _requested_story_lines(snap: _Snapshot) -> tuple[list[str], str]:
     """The story part for the project's current or latest ordered story, and its id."""
     try:
         story = await snap.latest_ordered_story(await snap.focus_project_id())
-    except Exception as exc:  # noqa: BLE001 — totality, as in ``_field``
+    except Exception as exc:  # noqa: BLE001 — totality, as in ``field``
+        snap.unknown_fields.append("story")
         _log_unknown("story", exc)
         return [f"- Story: {UNKNOWN}"], ""
     if story is None:
@@ -438,10 +452,10 @@ async def _story_lines(snap: _Snapshot, story_id: str) -> list[str]:
         return _entered(await snap.story(story_id), snap.now)
 
     return [
-        f"- Story: {await _field('story', title)}",
-        f"- Order: {await _field('order', order)}",
-        f"- Status: {await _field('status', status)}",
-        f"- In this status since: {await _field('status_entered_at', since)}",
+        f"- Story: {await snap.field('story', title)}",
+        f"- Order: {await snap.field('order', order)}",
+        f"- Status: {await snap.field('status', status)}",
+        f"- In this status since: {await snap.field('status_entered_at', since)}",
     ]
 
 
