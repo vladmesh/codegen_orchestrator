@@ -1,10 +1,12 @@
 """Tests for direct PO ReactAgent communication via Redis Streams."""
 
 import asyncio
+import math
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from shared.config_store import ConfigStoreUnavailableError
 from shared.contracts.queues.po import POResponse, protect_po_payload
 from src.main import (
     _keep_typing,
@@ -14,6 +16,14 @@ from src.main import (
 )
 from src.po_delivery import POResponsePending
 from src.texts import text as bot_text
+
+
+@pytest.fixture(autouse=True)
+def configured_timeout(monkeypatch):
+    store = MagicMock()
+    store.get.return_value = 60
+    monkeypatch.setattr("src.main._config_store", store, raising=False)
+    return store
 
 
 def response_xread(data):
@@ -141,6 +151,55 @@ class TestReadPOResponse:
 
 class TestSendToPOAndWait:
     """Tests for _send_to_po_and_wait."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("seconds", [15, 120])
+    async def test_configured_deadline_is_captured_for_both_consumers(
+        self, configured_timeout, mock_stream_client, mock_bot, seconds
+    ):
+        configured_timeout.get.return_value = seconds
+        with (
+            patch("src.main.register_request", new_callable=AsyncMock) as register,
+            patch("src.main._read_po_response", new_callable=AsyncMock) as read,
+        ):
+            read.return_value = POResponse(text="ready", telegram_chat_id="42")
+            await _send_to_po_and_wait(mock_stream_client, 42, "hello", mock_bot, 42)
+        assert register.await_args.args[-1] == seconds
+        assert read.await_args.args[-1] == seconds
+        configured_timeout.get.assert_called_once_with("telegram.po_response_timeout_seconds")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [None, 0, -2, math.nan, math.inf, "bad"])
+    async def test_invalid_policy_refuses_before_registration(
+        self, configured_timeout, mock_stream_client, mock_bot, value
+    ):
+        configured_timeout.get.return_value = value
+        with pytest.raises((RuntimeError, ValueError)):
+            await _send_to_po_and_wait(mock_stream_client, 42, "hello", mock_bot, 42)
+        mock_stream_client.redis.hset.assert_not_awaited()
+        mock_stream_client.publish_flat.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_missing_policy_refuses_before_registration(
+        self, configured_timeout, mock_stream_client, mock_bot
+    ):
+        configured_timeout.get.side_effect = KeyError("telegram.po_response_timeout_seconds")
+        with pytest.raises((RuntimeError, KeyError)):
+            await _send_to_po_and_wait(mock_stream_client, 42, "hello", mock_bot, 42)
+        mock_stream_client.redis.hset.assert_not_awaited()
+        mock_stream_client.publish_flat.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unavailable_policy_refuses_before_registration(
+        self, configured_timeout, mock_stream_client, mock_bot
+    ):
+        configured_timeout.get.side_effect = ConfigStoreUnavailableError(
+            "system config unavailable"
+        )
+        with pytest.raises(ConfigStoreUnavailableError):
+            await _send_to_po_and_wait(mock_stream_client, 42, "hello", mock_bot, 42)
+        mock_stream_client.redis.hset.assert_not_awaited()
+        mock_stream_client.publish_flat.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_successful_response(self, mock_stream_client, mock_bot):

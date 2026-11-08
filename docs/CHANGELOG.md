@@ -10,6 +10,7 @@ See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
 ## 2026-11-07
 
+- The bot reads the PO response wait from system config per request, so synchronous deadlines can change without losing accepted replies.
 - Direct PO replies remain owed after the bot's 60-second wait and recover on restart, so accepted answers can reach users without resubmission.
 - PO delivery claims use an independent random token, so request-ID stubs cannot disrupt late reply delivery.
 

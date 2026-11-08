@@ -6,6 +6,7 @@ Messages flow: XADD po:input → PO consumer → XREAD po:response:{request_id}.
 
 import asyncio
 import logging
+import math
 import os
 import sys
 import time
@@ -25,6 +26,7 @@ from telegram.ext import (
     filters,
 )
 
+from shared.config_store import ConfigStore, ConfigStoreUnavailableError
 from shared.contracts.queues.po import (
     POPayloadProtectionError,
     POResponse,
@@ -69,6 +71,8 @@ _provisioner_notifier_task: asyncio.Task | None = None
 _proactive_listener_task: asyncio.Task | None = None
 _po_response_listener_task: asyncio.Task | None = None
 _stream_client: RedisStreamClient | None = None
+_config_store: ConfigStore | None = None
+_config_refresh_task: asyncio.Task | None = None
 
 
 def get_stream_client() -> RedisStreamClient:
@@ -78,8 +82,7 @@ def get_stream_client() -> RedisStreamClient:
     return _stream_client
 
 
-# PO response settings
-PO_RESPONSE_TIMEOUT_S = 60
+PO_RESPONSE_TIMEOUT_KEY = "telegram.po_response_timeout_seconds"
 # Pause after a failed read of the PO response stream before the next read.
 PO_RESPONSE_READ_RETRY_DELAY_S = 0.5
 TYPING_INTERVAL_S = 5
@@ -213,7 +216,8 @@ async def _read_po_response(
         if remaining <= 0:
             return None
 
-        block_ms = min(2000, int(remaining * 1000))
+        # Redis treats BLOCK 0 as an indefinite wait.
+        block_ms = max(1, math.ceil(min(remaining, 2) * 1000))
 
         try:
             messages = await redis.xread(
@@ -256,6 +260,21 @@ async def _send_to_po_and_wait(
 
     The accepted request remains owed if waiting ends or is cancelled.
     """
+    if _config_store is None:
+        raise RuntimeError("Telegram system config is not initialized")
+    try:
+        value = _config_store.get(PO_RESPONSE_TIMEOUT_KEY)
+    except KeyError as exc:
+        raise RuntimeError(f"Missing required system config: {PO_RESPONSE_TIMEOUT_KEY}") from exc
+    if isinstance(value, bool):
+        raise ValueError(f"{PO_RESPONSE_TIMEOUT_KEY} must be positive finite seconds")
+    try:
+        wait_seconds = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{PO_RESPONSE_TIMEOUT_KEY} must be positive finite seconds") from exc
+    if not math.isfinite(wait_seconds) or wait_seconds <= 0:
+        raise ValueError(f"{PO_RESPONSE_TIMEOUT_KEY} must be positive finite seconds")
+
     request_id = str(uuid.uuid4())
     response_stream = f"po:response:{request_id}"
 
@@ -265,9 +284,7 @@ async def _send_to_po_and_wait(
         request_id=request_id,
         user_name=user_name,
     )
-    await register_request(
-        client.redis, request_id, telegram_chat_id, locale, PO_RESPONSE_TIMEOUT_S
-    )
+    await register_request(client.redis, request_id, telegram_chat_id, locale, wait_seconds)
     await client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(msg))
 
     logger.info(
@@ -279,7 +296,7 @@ async def _send_to_po_and_wait(
     typing_task = asyncio.create_task(_keep_typing(bot, chat_id))
 
     try:
-        response = await _read_po_response(client.redis, response_stream, PO_RESPONSE_TIMEOUT_S)
+        response = await _read_po_response(client.redis, response_stream, wait_seconds)
 
         if response is None:
             raise POResponsePending(request_id)
@@ -398,7 +415,7 @@ class ProactiveListener:
 async def post_init(app: Application) -> None:
     """Post-initialization: connect Redis and start listeners."""
     global _provisioner_notifier_task, _proactive_listener_task
-    global _po_response_listener_task, _stream_client
+    global _po_response_listener_task, _stream_client, _config_store, _config_refresh_task
 
     settings = get_settings()
 
@@ -419,13 +436,31 @@ async def post_init(app: Application) -> None:
         POResponseListener(_stream_client).run(app.bot)
     )
 
+    _config_store = ConfigStore(settings.api_base_url)
+    try:
+        await _config_store.refresh()
+    except ConfigStoreUnavailableError:
+        logger.warning("telegram_system_config_unavailable")
+    _config_refresh_task = asyncio.create_task(_config_store.refresh_forever())
+
     logger.info("telegram_bot_initialized", admin_count=len(admin_ids))
 
 
 async def post_shutdown(app: Application) -> None:
     """Cleanup on shutdown."""
     global _provisioner_notifier_task, _proactive_listener_task
-    global _po_response_listener_task, _stream_client
+    global _po_response_listener_task, _stream_client, _config_store, _config_refresh_task
+
+    if _config_refresh_task:
+        _config_refresh_task.cancel()
+        try:
+            await _config_refresh_task
+        except asyncio.CancelledError:
+            pass
+        _config_refresh_task = None
+    if _config_store:
+        await _config_store.close()
+        _config_store = None
 
     # Stop provisioner notifier
     if _provisioner_notifier_task:

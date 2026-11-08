@@ -9,7 +9,16 @@ Back to the [contracts index](../CONTRACTS.md).
 The Telegram bot records a request id and encrypted recipient/locale binding in
 `po:delivery:pending` and `po:delivery:address:<request_id>` before publishing
 `po:input`. The input publication can be ambiguous, so a transport error leaves
-the obligation recorded. The 60-second synchronous wait owns typing and the
+the obligation recorded. The synchronous wait uses `telegram.po_response_timeout_seconds`,
+a positive finite number of seconds seeded initially as 120. The bot reads its
+system-config snapshot once before registering and publishing each request, then uses
+that value for both the durable due time and interactive wait. Background refresh
+affects subsequent requests, not accepted deadlines. Missing, invalid or unavailable
+policy refuses new requests with a fixed failure message before registration or
+publication; the response listener still recovers accepted obligations. Ordinary
+system-config keys reconcile to `scripts/system_configs.yaml` on deploy, so an API
+edit to this key is reset by a later seed or deploy unless the YAML value changes.
+The synchronous wait owns typing and the
 interactive result only. At its deadline the bot stops typing and sends a
 localized pending notice; the accepted request remains owed. The response
 stays on the protected `po:response:<request_id>` stream until final delivery.

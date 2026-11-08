@@ -28,6 +28,12 @@
   category: capabilities
   description: "Projects whose capability previews may route to ready catalog modules"
 
+# --- telegram ---
+- key: telegram.po_response_timeout_seconds
+  value: 120
+  category: telegram
+  description: "Seconds the bot waits synchronously for a PO response before sending a pending notice"
+
 # --- scheduler ---
 - key: work_admission.max_projects_per_user
   value: 3

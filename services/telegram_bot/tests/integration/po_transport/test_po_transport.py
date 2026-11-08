@@ -19,7 +19,7 @@ from shared.contracts.queues.po import (
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_GROUP, PO_PROACTIVE_QUEUE
 from shared.redis import RedisStreamClient
 from src.main import _read_po_response, _send_to_po_and_wait
-from src.po_delivery import PENDING_KEY, POResponseListener
+from src.po_delivery import PENDING_KEY, POResponseListener, POResponsePending
 from src.proactive import ProactiveOutcome, process_proactive_entry
 from src.texts import text as bot_text
 
@@ -73,6 +73,9 @@ def logs(caplog, capsys, monkeypatch):
     )
     for module in (main, proactive, redis_client):
         monkeypatch.setattr(module, "logger", structlog.get_logger(module.__name__))
+    config_store = MagicMock()
+    config_store.get.return_value = 60
+    monkeypatch.setattr(main, "_config_store", config_store)
     caplog.set_level(logging.DEBUG)
     yield
     structlog.configure(**previous)
@@ -115,12 +118,35 @@ async def test_actual_telegram_input_and_direct_response_roundtrip(client, monke
         await asyncio.gather(send, return_exceptions=True)
 
 
+async def test_submillisecond_empty_stream_returns_pending_and_late_reply_once(client, monkeypatch):
+    from src import main
+
+    main._config_store.get.return_value = 0.0005
+    monkeypatch.setattr(main.uuid, "uuid4", lambda: "short-wait")
+    bot = AsyncMock()
+    with pytest.raises(POResponsePending):
+        await asyncio.wait_for(
+            _send_to_po_and_wait(client, 14310001, TEXT, bot, 14310001),
+            timeout=1,
+        )
+    assert await client.redis.zcard(PENDING_KEY) == 1
+    await client.publish_flat(
+        "po:response:short-wait",
+        to_flat_fields(POResponse(text="late answer", telegram_chat_id="14310001")),
+    )
+    listener = POResponseListener(client)
+    await listener.poll_once(bot)
+    await listener.poll_once(bot)
+    bot.send_message.assert_awaited_once()
+    assert bot.send_message.await_args.kwargs["text"] == "late answer"
+    assert await client.redis.zcard(PENDING_KEY) == 0
+
+
 async def test_deadline_then_two_late_replies_survive_listener_restart(client, monkeypatch):
     from src import main, po_delivery
 
     clock = [0.0]
     monkeypatch.setattr(po_delivery.time, "time", lambda: clock[0])
-    monkeypatch.setattr(main, "PO_RESPONSE_TIMEOUT_S", 60)
     monkeypatch.setattr(main, "_read_po_response", AsyncMock(return_value=None))
     bot = AsyncMock()
     for request_id, chat_id in (("late-a", 14310001), ("late-b", 14310002)):
@@ -157,8 +183,10 @@ async def test_deadline_then_two_late_replies_survive_listener_restart(client, m
 
 
 async def test_cancelled_wait_keeps_accepted_request_for_recovery(client, monkeypatch):
-    from src import main
+    from src import main, po_delivery
 
+    clock = [100.0]
+    monkeypatch.setattr(po_delivery.time, "time", lambda: clock[0])
     entered = asyncio.Event()
 
     async def wait_for_reply(*_args):
@@ -166,7 +194,6 @@ async def test_cancelled_wait_keeps_accepted_request_for_recovery(client, monkey
         await asyncio.Event().wait()
 
     monkeypatch.setattr(main, "_read_po_response", wait_for_reply)
-    monkeypatch.setattr(main, "PO_RESPONSE_TIMEOUT_S", 0)
     monkeypatch.setattr(main.uuid, "uuid4", lambda: "cancelled")
     bot = AsyncMock()
     waiter = asyncio.create_task(_send_to_po_and_wait(client, 14310001, TEXT, bot, 14310001))
@@ -175,6 +202,7 @@ async def test_cancelled_wait_keeps_accepted_request_for_recovery(client, monkey
     with pytest.raises(asyncio.CancelledError):
         await waiter
     assert await client.redis.zcard(PENDING_KEY) == 1
+    clock[0] = 161.0
     await client.publish_flat(
         "po:response:cancelled",
         to_flat_fields(POResponse(text="after cancel", telegram_chat_id="14310001")),
