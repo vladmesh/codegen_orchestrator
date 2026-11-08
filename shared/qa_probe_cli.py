@@ -14,8 +14,10 @@ __all__ = [
     "TELEGRAM_IDENTITY_FILE",
 ]
 
-QA_PROBE_NAME = "qa"
-QA_PROBE_PATH = f"/workspace/{QA_PROBE_NAME}"
+QA_PROBE_PATH = "/workspace/qa"
+# The prompt-facing command name is the installed path: the executor's PATH
+# does not include its workspace, and calls may run from another directory.
+QA_PROBE_NAME = QA_PROBE_PATH
 # Probes offered to this run: the platform seeds and the project's library, each
 # under its platform directory, listed in `index.json`. `/workspace/qa` is the
 # command itself, so the library sits beside it rather than under it.
@@ -30,30 +32,31 @@ SUBMIT_VERDICT_CALL = "submit_qa_result"
 TELEGRAM_IDENTITY_CALL = "telegram_identity"
 TELEGRAM_IDENTITY_FILE = "~/.qa/telegram_identity.json"
 
-QA_PROBE_USAGE = """\
-qa capabilities                     — what this run may reach
-qa http_get PATH                    — GET a path on the deployed public URL
-qa localhost_http_get PORT PATH     — GET a path on the target's loopback
-qa remote_read PATH                 — read a file in the deployment directory
-qa remote_exec ARG [ARG ...]        — one read-only docker call, e.g.
-                                      qa remote_exec docker top <container>
-qa container_logs CONTAINER [TAIL]  — tail one container's log
-qa container_inspect CONTAINER      — one container's state
-qa fire_job NAME                    — invoke one named scheduled behaviour
-qa job_evidence NAME                — read back this run's record of that fire
-qa telegram_probe [--wait-seconds N] MESSAGE — send a message to the bot under test
-qa telegram_click_button [--wait-seconds N] ID DATA — invoke a visible inline bot button
-qa telegram_identity                — write the QA Telegram account's Telethon
+QA_PROBE_USAGE = f"""\
+{QA_PROBE_NAME} capabilities                     — what this run may reach
+{QA_PROBE_NAME} http_get PATH                    — GET a path on the deployed public URL
+{QA_PROBE_NAME} localhost_http_get PORT PATH     — GET a path on the target's loopback
+{QA_PROBE_NAME} remote_read PATH                 — read a file in the deployment directory
+{QA_PROBE_NAME} remote_exec ARG [ARG ...]        — one read-only docker call, e.g.
+                                      {QA_PROBE_NAME} remote_exec docker top <container>
+{QA_PROBE_NAME} container_logs CONTAINER [TAIL]  — tail one container's log
+{QA_PROBE_NAME} container_inspect CONTAINER      — one container's state
+{QA_PROBE_NAME} fire_job NAME                    — invoke one named scheduled behaviour
+{QA_PROBE_NAME} job_evidence NAME                — read back this run's record of that fire
+{QA_PROBE_NAME} telegram_probe [--wait-seconds N] MESSAGE — send a message to the bot under test
+{QA_PROBE_NAME} telegram_click_button [--wait-seconds N] ID DATA — press a visible inline bot button
+{QA_PROBE_NAME} telegram_identity                — write the QA Telegram account's Telethon
                                       credentials and proxy to ~/.qa/telegram_identity.json
                                       for your own client; never print that file
-qa probe PLATFORM NAME FILE [ARG ...] — run a .py or .sh product check and retain
+{QA_PROBE_NAME} probe PLATFORM NAME FILE [ARG ...] — run a .py or .sh product check and retain
                                       its source, arguments and output as evidence
-qa report FILE                      — store the Markdown QA report
-qa finish FILE                      — submit the final result JSON and end the run\
+{QA_PROBE_NAME} report FILE                      — store the Markdown QA report
+{QA_PROBE_NAME} finish FILE                      — submit the final result JSON and end the run\
 """
 
 # Source text runs in the executor container without this repository installed.
-QA_PROBE_SCRIPT = '''#!/usr/bin/env python3
+QA_PROBE_SCRIPT = (
+    '''#!/usr/bin/env python3
 """qa — this container's calls to the QA runtime: the target's SSH-side reads and the verdict."""
 
 import json
@@ -121,25 +124,25 @@ def build_call(argv):
         return "capabilities", {}
     if command == "http_get":
         if len(rest) != 1:
-            fail("usage: qa http_get PATH")
+            fail("usage: __QA_PROBE_PATH__ http_get PATH")
         return "http_get", {"path": rest[0]}
     if command == "localhost_http_get":
         if len(rest) != 2:
-            fail("usage: qa localhost_http_get PORT PATH")
+            fail("usage: __QA_PROBE_PATH__ localhost_http_get PORT PATH")
         if not rest[0].isdigit():
             fail("PORT must be a number")
         return "localhost_http_get", {"port": int(rest[0]), "path": rest[1]}
     if command == "remote_read":
         if len(rest) != 1:
-            fail("usage: qa remote_read PATH")
+            fail("usage: __QA_PROBE_PATH__ remote_read PATH")
         return "remote_read", {"path": rest[0]}
     if command == "remote_exec":
         if not rest:
-            fail("usage: qa remote_exec ARG [ARG ...]")
+            fail("usage: __QA_PROBE_PATH__ remote_exec ARG [ARG ...]")
         return "remote_exec", {"command": rest}
     if command == "container_logs":
         if len(rest) not in (1, 2):
-            fail("usage: qa container_logs CONTAINER [TAIL]")
+            fail("usage: __QA_PROBE_PATH__ container_logs CONTAINER [TAIL]")
         args = {"container": rest[0]}
         if len(rest) == 2:
             if not rest[1].isdigit():
@@ -148,15 +151,15 @@ def build_call(argv):
         return "container_logs", args
     if command == "container_inspect":
         if len(rest) != 1:
-            fail("usage: qa container_inspect CONTAINER")
+            fail("usage: __QA_PROBE_PATH__ container_inspect CONTAINER")
         return "container_inspect", {"container": rest[0]}
     if command == "fire_job":
         if len(rest) != 1:
-            fail("usage: qa fire_job NAME")
+            fail("usage: __QA_PROBE_PATH__ fire_job NAME")
         return "fire_job", {"name": rest[0]}
     if command == "job_evidence":
         if len(rest) != 1:
-            fail("usage: qa job_evidence NAME")
+            fail("usage: __QA_PROBE_PATH__ job_evidence NAME")
         return "job_evidence", {"name": rest[0]}
     wait_args = {}
     if command in ("telegram_probe", "telegram_click_button") and rest[:1] == ["--wait-seconds"]:
@@ -169,21 +172,21 @@ def build_call(argv):
         rest = rest[2:]
     if command == "telegram_probe":
         if not rest:
-            fail("usage: qa telegram_probe MESSAGE")
+            fail("usage: __QA_PROBE_PATH__ telegram_probe MESSAGE")
         return "telegram_probe", {"message": " ".join(rest), **wait_args}
     if command == "telegram_click_button":
         if len(rest) != 2 or not rest[0].isdigit():
-            fail("usage: qa telegram_click_button MESSAGE_ID CALLBACK_DATA")
+            fail("usage: __QA_PROBE_PATH__ telegram_click_button MESSAGE_ID CALLBACK_DATA")
         return "telegram_click_button", {
             "message_id": int(rest[0]), "callback_data": rest[1], **wait_args,
         }
     if command == "telegram_identity":
         if rest:
-            fail("usage: qa telegram_identity")
+            fail("usage: __QA_PROBE_PATH__ telegram_identity")
         return "telegram_identity", {}
     if command == "probe":
         if len(rest) < 3:
-            fail("usage: qa probe PLATFORM NAME FILE [ARG ...]")
+            fail("usage: __QA_PROBE_PATH__ probe PLATFORM NAME FILE [ARG ...]")
         platform, name, path = rest[:3]
         if platform not in ("telegram", "http", "web"):
             fail("PLATFORM must be one of telegram, http, web")
@@ -192,11 +195,11 @@ def build_call(argv):
         return "probe", {"platform": platform, "name": name, "path": path, "arguments": rest[3:]}
     if command == "report":
         if len(rest) != 1:
-            fail("usage: qa report FILE")
+            fail("usage: __QA_PROBE_PATH__ report FILE")
         return "write_qa_report", {"markdown": read_file(rest[0])}
     if command == "finish":
         if len(rest) != 1:
-            fail("usage: qa finish FILE")
+            fail("usage: __QA_PROBE_PATH__ finish FILE")
         return "submit_qa_result", {"result": read_file(rest[0])}
     fail("unknown command %r\\n\\n%s" % (command, USAGE))
 
@@ -401,6 +404,7 @@ def write_identity(answer):
 
 if __name__ == "__main__":
     raise SystemExit(main())
-'''.replace("__QA_PROBE_USAGE__", QA_PROBE_USAGE).replace(
-    "__QA_IDENTITY_FILE__", TELEGRAM_IDENTITY_FILE
+'''.replace("__QA_PROBE_USAGE__", QA_PROBE_USAGE)
+    .replace("__QA_IDENTITY_FILE__", TELEGRAM_IDENTITY_FILE)
+    .replace("__QA_PROBE_PATH__", QA_PROBE_PATH)
 )
