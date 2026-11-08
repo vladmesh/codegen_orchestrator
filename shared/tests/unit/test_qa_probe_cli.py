@@ -5,6 +5,9 @@ from __future__ import annotations
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 import json
+from pathlib import Path
+import shlex
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -281,3 +284,42 @@ def test_probe_scrubs_secrets_before_cli_cut_print_and_send(
         assert candidate not in request_bytes.decode()
         assert candidate not in stdout.getvalue()
         assert candidate not in stderr.getvalue()
+
+
+@pytest.mark.subprocess
+def test_help_and_argument_error_commands_resolve_outside_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = workspace / "qa"
+    executable.write_text(QA_PROBE_SCRIPT)
+    executable.chmod(0o755)
+    env = {
+        "PATH": str(Path(sys.executable).parent),
+        "QA_CAPABILITY_URL": "http://127.0.0.1:9",
+        "QA_CAPABILITY_TOKEN": "synthetic",
+    }
+    help_result = subprocess.run(
+        [str(executable), "--help"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert help_result.returncode == 0
+    command = shlex.split(help_result.stdout.splitlines()[0].split("—")[0])
+    # Relocate the container's absolute workspace into this synthetic installation.
+    command[0] = command[0].replace("/workspace/", str(workspace) + "/")
+    command[1:] = ["http_get"]  # Missing PATH argument: fail locally, without a network call.
+    failed = subprocess.run(
+        command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=5
+    )
+    assert failed.returncode == 2
+    retry_command = shlex.split(failed.stderr.removeprefix("usage: "))
+    retry_command[0] = retry_command[0].replace("/workspace/", str(workspace) + "/")
+    retry_command[1:] = ["--help"]
+    retried = subprocess.run(
+        retry_command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=5
+    )
+    assert retried.returncode == 0
+    assert retried.stdout == help_result.stdout

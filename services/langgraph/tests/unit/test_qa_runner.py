@@ -116,8 +116,9 @@ class TestBuildQAPrompt:
         assert "TELETHON_SESSION" not in prompt
         assert "StringSession" not in prompt
         # A probe of its own gets the account only as the file the CLI writes.
-        assert "`qa telegram_identity` writes for your Telethon client; never print that file" in (
-            " ".join(prompt.split())
+        assert (
+            "`/workspace/qa telegram_identity` writes for your Telethon client; "
+            "never print that file" in (" ".join(prompt.split()))
         )
 
     def test_bot_prompt_forbids_reporting_telegram_checks_as_blocked(self):

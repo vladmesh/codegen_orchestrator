@@ -2,9 +2,12 @@
 
 from contextlib import redirect_stdout
 from io import StringIO
+import json
+import shlex
 import sys
 import time
 from types import ModuleType
+import urllib.request
 
 import pytest
 
@@ -54,3 +57,36 @@ async def test_hostile_probe_values_reach_telethon_under_the_bounded_wait(
 
     monkeypatch.setattr(injection, "_run", run_in_memory)
     await test_case(child, value)
+
+
+@pytest.mark.parametrize("bot_username", [None, "synthetic_bot"])
+def test_rendered_first_qa_call_reaches_capability_boundary(monkeypatch, bot_username):
+    from shared.qa_probe_cli import QA_PROBE_PATH, QA_PROBE_SCRIPT
+    from shared.tests.unit.test_qa_probe_cli import _Response
+    from src.prompts.qa import build_qa_instructions, build_qa_prompt
+
+    prompt = build_qa_prompt("- GET /health succeeds", "https://qa.test", bot_username)
+    instructions = build_qa_instructions()
+    commands = [
+        shlex.split(part)
+        for text in (prompt, instructions)
+        for part in text.split("`")[1::2]
+        if part.endswith(" capabilities")
+    ]
+    assert commands
+    requests = []
+
+    def urlopen(request, *, timeout):
+        requests.append(json.loads(request.data))
+        return _Response('{"public_url": "https://qa.test"}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("QA_CAPABILITY_URL", "http://qa.test/qa/call")
+    monkeypatch.setenv("QA_CAPABILITY_TOKEN", "synthetic-token")
+    for command in commands:
+        assert command[0] == QA_PROBE_PATH
+        monkeypatch.setattr(sys, "argv", command)
+        with pytest.raises(SystemExit) as exited, redirect_stdout(StringIO()):
+            exec(QA_PROBE_SCRIPT, {"__name__": "__main__"})  # noqa: S102 - injected CLI
+        assert exited.value.code == 0
+    assert requests == [{"tool": "capabilities", "args": {}}] * len(commands)
