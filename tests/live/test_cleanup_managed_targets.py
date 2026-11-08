@@ -1,7 +1,6 @@
 """Managed-target admission for final cleanup and write-ahead recovery."""
 
 import asyncio
-import importlib.util
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -10,16 +9,14 @@ import httpx
 import pytest
 
 from shared import live_harness_cleanup
+from tests.path_loader import load_module
 
 pytestmark = pytest.mark.needs_no_api_credential
 
 
 def _load_clean_live_tests():
     path = Path(__file__).resolve().parents[2] / "scripts" / "clean_live_tests.py"
-    spec = importlib.util.spec_from_file_location("clean_live_tests", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_module("clean_live_tests", path)
 
 
 def _managed_server() -> dict[str, object]:

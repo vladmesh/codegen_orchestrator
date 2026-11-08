@@ -509,14 +509,12 @@ SWEEP_RUN_ID = "deploy-grant-71672573103249b09aaf4cb3dbdf2a54"
 
 def _sweep_module():
     """The sweep, imported the way the stand runs it (`python -m`)."""
-    import importlib.util
     from pathlib import Path
 
+    from tests.path_loader import load_module
+
     path = Path(__file__).resolve().parents[2] / "scripts" / "clean_live_tests.py"
-    spec = importlib.util.spec_from_file_location("clean_live_tests_for_teardown", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_module("clean_live_tests_for_teardown", path)
 
 
 def _sweep_plan(module):
