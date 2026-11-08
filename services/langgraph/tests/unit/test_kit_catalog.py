@@ -33,8 +33,21 @@ from src.kit_catalog import (
     get_kit_catalog_reader,
     installed_tooling_commit,
 )
+from tests.unit.activated_catalog import activated_catalog
 
 URL = "https://raw.example.invalid/kit/HEAD/packages/catalog.yaml"
+
+
+def test_activated_catalog_selects_the_published_channel_release():
+    catalog = activated_catalog()
+    channels = next(item for item in catalog.packages if item.package.name == "tg-channels")
+    assert (channels.version.version, channels.version.tag) == (
+        "0.2.1",
+        "packages/tg-channels/v0.2.1",
+    )
+    assert catalog.catalog_sha256 == CATALOG_ACTIVATION.catalog_sha256
+    assert catalog.digest == CATALOG_ACTIVATION.catalog_digest
+
 
 CATALOG = """\
 format_version: 1

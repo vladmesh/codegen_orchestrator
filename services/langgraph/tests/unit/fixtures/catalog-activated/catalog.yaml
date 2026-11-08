@@ -377,6 +377,9 @@ packages:
     - version: 0.2.0
       tag: packages/tg-channels/v0.2.0
       requires_core: '>=2.4,<3'
+    - version: 0.2.1
+      tag: packages/tg-channels/v0.2.1
+      requires_core: '>=2.4,<3'
   - name: ranking
     distribution: codegen-kit-ranking
     path: packages/codegen-kit-ranking

@@ -33,7 +33,7 @@ TECHNICAL = (
     "tg-channels",
     "tg_channels",
     "codegen-kit",
-    "0.2.0",
+    "0.2.1",
     "packages/",
     "starting_channels",
     "kit add",
@@ -196,7 +196,7 @@ async def test_the_technical_half_is_stored_by_the_platform_itself(api, activate
     [(path, body, headers)] = api.posts
     assert path == "capability-previews/" and headers is None
     [module] = body["technical"]["modules"]
-    assert module["install"]["package"]["tag"] == "packages/tg-channels/v0.2.0"
+    assert module["install"]["package"]["tag"] == "packages/tg-channels/v0.2.1"
     assert module["install"]["catalog"]["commit"] == body["technical"]["activation"]["commit"]
 
 

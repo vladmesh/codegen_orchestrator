@@ -1,7 +1,7 @@
 """The Architect plans a catalog INSTALL only after the packages that provide what it requires.
 
 `plan_install` runs against the activated snapshot's genuine bytes, where ranking 0.1.0
-requires `tg-channels.posts.v1` and tg-channels 0.2.0 provides it; only the API is in memory.
+requires `tg-channels.posts.v1` and tg-channels 0.2.1 provides it; only the API is in memory.
 """
 
 from __future__ import annotations
@@ -116,7 +116,7 @@ async def test_the_provider_then_its_dependent_is_one_ordered_chain(api, activat
     assert [
         (task["install"]["package"]["name"], task["install"]["package"]["version"])
         for task in api.created
-    ] == [("tg-channels", "0.2.0"), ("ranking", "0.1.0")]
+    ] == [("tg-channels", "0.2.1"), ("ranking", "0.1.0")]
     assert dependent["blocked_by_task_id"] == provider["id"]
     assert [task["install"]["binding"]["resource"] for task in api.created] == [
         "codegen_kit_tg_channels:bindings/default.yaml",

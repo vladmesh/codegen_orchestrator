@@ -455,7 +455,7 @@ async def test_top_channel_posts_install_their_provider_first_without_engineerin
         )
         for task in api.task_payloads
     ] == [
-        ("install", "tg-channels", "0.2.0", "codegen_kit_tg_channels:bindings/default.yaml"),
+        ("install", "tg-channels", "0.2.1", "codegen_kit_tg_channels:bindings/default.yaml"),
         ("install", "ranking", "0.1.0", "codegen_kit_ranking:bindings/default.yaml"),
     ]
     assert api.task_payloads[1]["blocked_by_task_id"] == "task-1"
