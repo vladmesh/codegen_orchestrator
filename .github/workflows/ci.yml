@@ -721,7 +721,7 @@ jobs:
           [[ "$kit" =~ ^[0-9a-f]{40}$ && "$tooling" =~ ^[0-9a-f]{40}$ ]]
           echo "KIT_SHA=$kit" >> "$GITHUB_ENV"
           echo "TOOLING_SHA=$tooling" >> "$GITHUB_ENV"
-          echo "PACKAGE_VERSION=0.2.0" >> "$GITHUB_ENV"
+          echo "PACKAGE_VERSION=0.2.1" >> "$GITHUB_ENV"
 
       - name: Check out the activated kit commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

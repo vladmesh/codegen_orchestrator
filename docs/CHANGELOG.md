@@ -3,6 +3,11 @@
 One `## YYYY-MM-DD` heading per merge day, newest first; one bullet of at most two lines per entry.
 See the CHANGELOG rule in [AGENTS.md](../AGENTS.md).
 
+## 2026-11-08
+
+- Activate the released kit catalog at `060cb052` and select tg-channels 0.2.1 in Runner Proof,
+  so planning and CI exercise the published poller recovery fix.
+
 ## 2026-11-07
 
 - Direct PO replies remain owed after the bot's 60-second wait and recover on restart, so accepted answers can reach users without resubmission.

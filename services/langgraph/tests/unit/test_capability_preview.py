@@ -1,7 +1,7 @@
 """The Architect's capability preview over the activated catalog, from genuine bytes.
 
 `resolve_preview` is pure: the catalog (`activated_kit_catalog`, the activated commit's
-catalog and the published tg-channels 0.2.0 / ranking 0.1.0 / reminders 0.5.0 resources), the
+catalog and the published tg-channels 0.2.1 / ranking 0.1.0 / reminders 0.5.0 resources), the
 project's shape and the rollout decision go in, and a preview the API stores comes out, or a
 typed refusal. Nothing here mocks the resolver, the kit loaders or the closure selection.
 """
@@ -68,7 +68,7 @@ def test_offers_are_user_level_capabilities_with_opaque_ids(activated_kit_catalo
     assert "show top posts by views" in ranking.phrases
     assert "лучшие публикации по просмотрам" in ranking.phrases
     rendered = " ".join(offer.model_dump_json() for offer in offers)
-    for technical in ("tg-channels", "0.2.0", "0.5.0", "packages/", "codegen-kit", "textparse"):
+    for technical in ("tg-channels", "0.2.1", "0.5.0", "packages/", "codegen-kit", "textparse"):
         assert technical not in rendered
 
 
@@ -81,8 +81,8 @@ def test_a_public_channel_capability_resolves_to_the_published_closure(activated
     install = module.install
     assert (install.package.name, install.package.version, install.package.tag) == (
         "tg-channels",
-        "0.2.0",
-        "packages/tg-channels/v0.2.0",
+        "0.2.1",
+        "packages/tg-channels/v0.2.1",
     )
     assert install.libraries == []
     assert install.binding.resource == "codegen_kit_tg_channels:bindings/default.yaml"
@@ -139,7 +139,7 @@ def test_the_product_projection_carries_no_technical_fact(activated_kit_catalog)
         "tg-channels",
         "tg_channels",
         "codegen",
-        "0.2.0",
+        "0.2.1",
         "0.5.0",
         "textparse",
         "packages/",
